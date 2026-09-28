@@ -31,7 +31,6 @@ APIRequestContext eller API-klient.
 import logging
 from typing import Any
 
-import config
 from automation_server_client import WorkItemError
 from playwright.async_api import (
     Page,
@@ -57,6 +56,8 @@ from q_insubiz.functionality.skader import (
     send_digital_post,
     vaelg_dokumentskabelon,
 )
+
+import config
 
 logger = logging.getLogger(__name__)
 

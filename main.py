@@ -40,14 +40,12 @@ import inspect
 import logging
 from typing import Any, Final
 
-import config
 from automation_server_client import (
     AutomationServer,
     WorkItemError,
     Workqueue,
 )
 from playwright.async_api import Page
-from populate_queue import populate_queue
 from q_haderslev_vbo.playwright.browser_session import (
     BrowserSession,
 )
@@ -61,7 +59,9 @@ from q_insubiz.functionality.launch import (
     launch_insubiz,
 )
 
+import config
 from behandel import behandel_page
+from populate_queue import populate_queue
 
 # ------------------------------------------------------------
 # LOGGING
