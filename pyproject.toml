@@ -1,14 +1,19 @@
 [project]
-name = "process-template"
-version = "0.2.0"
-description = "Add your description here"
+name = "insubiz-send-easy-og-henlaeggelsesbreve"
+version = "0.1.0"
+description = "ATS-proces til oprettelse og afsendelse af henlæggelsesbreve via Insubiz."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "automation-server-client",
     "q-haderslev-vbo",
+    "q-insubiz",
 ]
 
 [tool.uv.sources]
 automation-server-client = { git = "https://github.com/odense-rpa/automation-server-client.git", tag = "v0.3.0" }
-q-haderslev-vbo = { git = "https://github.com/haderslev-rpa/q-haderslev-vbo.git", branch = "main" }
+q-haderslev-vbo = { git = "https://github.com/haderslev-rpa/q-haderslev-vbo.git" }
+q-insubiz = { git = "https://github.com/haderslev-rpa/q-insubiz.git", branch = "main" }
+
+[dependency-groups]
+dev = ["pytest>=9.0.0"]
