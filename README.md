@@ -1,21 +1,43 @@
-## How to use this template
+# Opdatering til q-insubiz fejlscreenshots
 
-The repository has been tagged as a template repository. This means you can create a new repository based on this code using the [GitHub instructions](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-repository-from-a-template)
+Erstat de komplette filer:
 
+- `main.py`
+- `behandel.py`
 
-### Alternative method: checkout the repository and remove git bindings
-Replace `<new-folder-name>` with your desired folder name:
-```sh
-git clone https://github.com/odense-rpa/process-template.git <new-folder-name>
+`pyproject.toml` er medtaget komplet og peger fortsat på `q-insubiz` branch
+`main`. Efter at den nye q-insubiz-commit er pushed, skal låsefilen opdateres.
 
-cd <new-folder-name>
+## Hvad ændres
 
-rm -rf .git
-git init
-git add .
-git commit -m "Initial commit from process-template"
+- `PlaywrightRunRecorder` oprettes i process-mode både med og uden `--debug`.
+- Recorderen sendes fra `main.py` til `behandel_page()`.
+- `behandel.py` sender recorderen til alle q-insubiz UI-funktioner.
+- q-insubiz kan derfor kalde `screenshot(..., always=True)` ved UI-fejl.
+- Screenshots gemmes lokalt og forsøges uploadet til SharePoint af recorderen.
+- Queue-mode er uændret.
 
-git remote add origin <new-repo-url>
-git push -u origin main
+## Opdater dependency
+
+```bash
+uv lock --upgrade-package q-insubiz
+uv sync
 ```
 
+## Kontrol
+
+```bash
+uv run python -c "import inspect; from q_insubiz.functionality.skader import send_digital_post; print(inspect.signature(send_digital_post))"
+
+uvx ruff check behandel.py main.py
+uvx ruff format --check behandel.py main.py
+
+uv run python -m py_compile \
+    behandel.py \
+    main.py
+
+uv run python -c "import behandel; import main; print('Procesimports OK')"
+```
+
+Den installerede `send_digital_post`-signatur skal indeholde
+`recorder: PlaywrightRunRecorder | None = None`.

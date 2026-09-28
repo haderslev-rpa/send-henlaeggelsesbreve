@@ -11,8 +11,10 @@ Fyld køen:
 Behandl næste item:
     uv run --env-file .env python main.py
 
-Behandl næste item med screenshots ved Playwright-fejl:
+Behandl næste item med udvidet debug-logning:
     uv run --env-file .env python main.py --debug
+
+Fejlscreenshots fra q-insubiz tages også uden --debug.
 
 Ansvarsfordeling
 ----------------
@@ -25,7 +27,7 @@ main.py ejer:
 - Insubiz API-klient omkring samme BrowserContexts request-session
 - lukning af browseren
 
-behandel.py modtager den autentificerede side og API-klient og udfører:
+behandel.py modtager den autentificerede side, API-klient og recorder og udfører:
 - opslag af skade
 - dokumentoprettelse
 - oprettelse af EASY-rapport
@@ -38,12 +40,14 @@ import inspect
 import logging
 from typing import Any, Final
 
+import config
 from automation_server_client import (
     AutomationServer,
     WorkItemError,
     Workqueue,
 )
 from playwright.async_api import Page
+from populate_queue import populate_queue
 from q_haderslev_vbo.playwright.browser_session import (
     BrowserSession,
 )
@@ -57,9 +61,7 @@ from q_insubiz.functionality.launch import (
     launch_insubiz,
 )
 
-import config
 from behandel import behandel_page
-from populate_queue import populate_queue
 
 # ------------------------------------------------------------
 # LOGGING
@@ -393,14 +395,16 @@ def _opret_recorder(
     *,
     browser_session: BrowserSession,
     debug: bool,
-) -> PlaywrightRunRecorder | None:
-    """Opretter recorderen fra BrowserSession."""
-    if not debug:
-        return None
+) -> PlaywrightRunRecorder:
+    """Opretter recorderen til login- og behandlingsfejl.
 
+    Recorderen oprettes også uden --debug. q-insubiz kalder
+    screenshot(..., always=True) ved UI-fejl, så fejlscreenshots
+    stadig gemmes lokalt og forsøges uploadet til SharePoint.
+    """
     return PlaywrightRunRecorder(
         browser_session=browser_session,
-        debug=True,
+        debug=debug,
         always=False,
     )
 
@@ -542,6 +546,7 @@ async def _koer_process_mode(
     )
 
     browser_session: BrowserSession | None = None
+    api_client: Any | None = None
 
     try:
         browser_session = await _opret_browser_session()
@@ -585,6 +590,7 @@ async def _koer_process_mode(
                 session=browser_session,
                 page=page,
                 api_client=api_client,
+                recorder=recorder,
             )
         except WorkItemError as error:
             logger.error(

@@ -16,7 +16,7 @@ Forløb
 9. Registrér states efter afsluttede handlinger.
 10. Returnér til main.py, som afslutter work itemet.
 
-BrowserSession, Page og InsubizApiClient oprettes og ejes af main.py.
+BrowserSession, Page, InsubizApiClient og PlaywrightRunRecorder oprettes og ejes af main.py.
 
 Den samme BrowserContext bruges til:
 
@@ -31,6 +31,7 @@ APIRequestContext eller API-klient.
 import logging
 from typing import Any
 
+import config
 from automation_server_client import WorkItemError
 from playwright.async_api import (
     Page,
@@ -44,6 +45,9 @@ from q_haderslev_vbo.automation_server.ats_update_item_data import (
 from q_haderslev_vbo.playwright.browser_session import (
     BrowserSession,
 )
+from q_haderslev_vbo.playwright.playwright_run_recorder import (
+    PlaywrightRunRecorder,
+)
 from q_insubiz.api.client import InsubizApiClient
 from q_insubiz.functionality.skader import (
     download_easy_rapport_og_gem_i_mappe,
@@ -53,8 +57,6 @@ from q_insubiz.functionality.skader import (
     send_digital_post,
     vaelg_dokumentskabelon,
 )
-
-import config
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +141,7 @@ async def behandel_page(
     session: BrowserSession,
     page: Page,
     api_client: InsubizApiClient,
+    recorder: PlaywrightRunRecorder | None = None,
 ) -> None:
     """Behandler ét henlæggelsesbrev-work item."""
     _valider_browserobjekter(
@@ -318,17 +321,20 @@ async def behandel_page(
         ):
             dialog = await opret_dokument_fra_skabelon(
                 page=page,
+                recorder=recorder,
             )
 
             valgt_skabelon = await vaelg_dokumentskabelon(
                 page=page,
                 dialog=dialog,
                 skabelon_navn=skabelon_navn,
+                recorder=recorder,
             )
 
             await gem_dokument_fra_skabelon(
                 page=page,
                 dialog=dialog,
+                recorder=recorder,
             )
 
             _registrer_state(
@@ -365,6 +371,7 @@ async def behandel_page(
         ):
             await download_easy_rapport_og_gem_i_mappe(
                 page=page,
+                recorder=recorder,
             )
 
             _registrer_state(
@@ -408,6 +415,7 @@ async def behandel_page(
                 hoveddokument_navn=hoveddokument_navn,
                 bilag_navn=bilag_navn,
                 test=digital_post_test,
+                recorder=recorder,
             )
 
             _valider_digital_post_resultat(
