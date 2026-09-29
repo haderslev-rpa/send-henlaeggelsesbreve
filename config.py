@@ -18,7 +18,7 @@ CURRENT_YEAR: int = datetime.now(
 # BROWSER
 # ------------------------------------------------------------
 
-HEADLESS: bool = False
+HEADLESS: bool = True
 
 
 # ------------------------------------------------------------
