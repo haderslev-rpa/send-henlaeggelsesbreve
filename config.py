@@ -98,6 +98,15 @@ BILAG_NAVN: str = "Anmeldelse af arbejdsulykke"
 
 DIGITAL_POST_TEST: bool = False
 
+# ------------------------------------------------------------
+# KOMMENTAR EFTER DIGITAL POST
+# ------------------------------------------------------------
+KOMMENTAR_TIDSZONE = LOCAL_TIMEZONE
+KOMMENTAR_TITEL_PREFIX = "Henlæggelsesbrev afsendt til borger d. "
+KOMMENTAR_DATOFORMAT = "%d-%m-%Y - kl: %H.%M"
+KOMMENTAR_HOVEDDOKUMENT_LABEL = "Hoved dokument"
+KOMMENTAR_BILAG_LABEL = "Bilag"
+
 
 # ------------------------------------------------------------
 # AUTOMATION SERVER

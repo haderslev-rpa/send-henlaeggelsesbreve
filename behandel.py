@@ -29,6 +29,7 @@ APIRequestContext eller API-klient.
 """
 
 import logging
+from datetime import datetime
 from typing import Any
 
 from automation_server_client import WorkItemError
@@ -53,6 +54,7 @@ from q_insubiz.functionality.skader import (
     gem_dokument_fra_skabelon,
     hent_skade_via_id,
     opret_dokument_fra_skabelon,
+    opret_kommentar_paa_skade,
     send_digital_post,
     vaelg_dokumentskabelon,
 )
@@ -83,7 +85,9 @@ STATE_EASY_RAPPORT_OPRETTET = "2.0 Oprettet EASY-rapport"
 
 STATE_DIGITAL_POST_SENDT = "3.0 Sendt digital post"
 
-AFSLUTTENDE_STATES = (STATE_DIGITAL_POST_SENDT,)
+STATE_KOMMENTAR_OPRETTET = "4.0 Kommentar om Digital Post oprettet"
+
+AFSLUTTENDE_STATES = (STATE_KOMMENTAR_OPRETTET,)
 
 
 # ------------------------------------------------------------
@@ -109,6 +113,15 @@ SKADE_NR_FELTER = (
     "Skadenr.",
     "IncidentNumberInternal",
 )
+
+
+# ------------------------------------------------------------
+# BOX-FELTER TIL DIGITAL POST OG KOMMENTAR
+# ------------------------------------------------------------
+
+BOX_DIGITAL_POST_HOVEDDOKUMENT = "Digital Post hoveddokument"
+BOX_DIGITAL_POST_BILAG = "Digital Post bilag"
+BOX_DIGITAL_POST_KOMMENTAR_ID = "Digital Post kommentar-id"
 
 
 # ------------------------------------------------------------
@@ -438,6 +451,24 @@ async def behandel_page(
                     f"Skade-id: {skade_id}."
                 )
 
+            faktisk_hoveddokument = _normaliser_paakraevet_tekst(
+                value=resultat.get("faktisk_hoveddokument"),
+                field_name="faktisk_hoveddokument",
+            )
+            faktisk_bilag = _normaliser_paakraevet_tekst(
+                value=resultat.get("faktisk_bilag"),
+                field_name="faktisk_bilag",
+            )
+
+            update_item_data(
+                data,
+                item=item,
+                box_updates={
+                    BOX_DIGITAL_POST_HOVEDDOKUMENT: faktisk_hoveddokument,
+                    BOX_DIGITAL_POST_BILAG: faktisk_bilag,
+                },
+            )
+
             _registrer_state(
                 data=data,
                 item=item,
@@ -452,15 +483,13 @@ async def behandel_page(
                 "Bilag: %r.",
                 skade_id,
                 skade_nr,
-                resultat.get("faktisk_hoveddokument"),
-                resultat.get("faktisk_bilag"),
+                faktisk_hoveddokument,
+                faktisk_bilag,
             )
 
             print("Digital Post blev sendt.")
-
-            print(f"Hoveddokument: {resultat.get('faktisk_hoveddokument')}")
-
-            print(f"Bilag: {resultat.get('faktisk_bilag')}")
+            print(f"Hoveddokument: {faktisk_hoveddokument}")
+            print(f"Bilag: {faktisk_bilag}")
 
         else:
             logger.info(
@@ -471,6 +500,105 @@ async def behandel_page(
             )
 
             print("Digital Post allerede sendt i en tidligere kørsel.")
+
+        # --------------------------------------------------
+        # OPRET KOMMENTAR PÅ SKADEN
+        # --------------------------------------------------
+
+        if not _har_state(
+            data=data,
+            state=STATE_KOMMENTAR_OPRETTET,
+        ):
+            box = _hent_box(data=data)
+
+            faktisk_hoveddokument = _normaliser_paakraevet_tekst(
+                value=box.get(BOX_DIGITAL_POST_HOVEDDOKUMENT),
+                field_name=f"box.{BOX_DIGITAL_POST_HOVEDDOKUMENT}",
+            )
+            faktisk_bilag = _normaliser_paakraevet_tekst(
+                value=box.get(BOX_DIGITAL_POST_BILAG),
+                field_name=f"box.{BOX_DIGITAL_POST_BILAG}",
+            )
+
+            tidspunkt = datetime.now(config.KOMMENTAR_TIDSZONE)
+            titel = (
+                config.KOMMENTAR_TITEL_PREFIX
+                + tidspunkt.strftime(config.KOMMENTAR_DATOFORMAT)
+            )
+            kommentartekst = (
+                f"{config.KOMMENTAR_HOVEDDOKUMENT_LABEL}: "
+                f"{faktisk_hoveddokument}\n"
+                f"{config.KOMMENTAR_BILAG_LABEL}: {faktisk_bilag}"
+            )
+
+            kommentar = await opret_kommentar_paa_skade(
+                request_context=page.context.request,
+                skade_id=skade_id,
+                titel=titel,
+                kommentartekst=kommentartekst,
+            )
+
+            if not isinstance(kommentar, dict):
+                raise WorkItemError(
+                    "opret_kommentar_paa_skade returnerede ikke en dictionary. "
+                    f"Skade-id: {skade_id}. "
+                    f"Modtog: {type(kommentar).__name__}."
+                )
+
+            kommentar_id = kommentar.get("id")
+            if (
+                isinstance(kommentar_id, bool)
+                or not isinstance(kommentar_id, int)
+                or kommentar_id <= 0
+            ):
+                raise WorkItemError(
+                    "Kommentaroprettelsen returnerede ikke et gyldigt "
+                    "kommentar-id. "
+                    f"Skade-id: {skade_id}. "
+                    "Kontrollér Insubiz før genkørsel."
+                )
+
+            update_item_data(
+                data,
+                item=item,
+                box_updates={
+                    BOX_DIGITAL_POST_KOMMENTAR_ID: kommentar_id,
+                },
+            )
+
+            _registrer_state(
+                data=data,
+                item=item,
+                state=STATE_KOMMENTAR_OPRETTET,
+            )
+
+            logger.info(
+                "Kommentar om Digital Post blev oprettet. "
+                "Skade-id: %s. Skade-nr.: %s. Kommentar-id: %s. "
+                "Titel: %r. Hoveddokument: %r. Bilag: %r.",
+                skade_id,
+                skade_nr,
+                kommentar_id,
+                titel,
+                faktisk_hoveddokument,
+                faktisk_bilag,
+            )
+
+            print("Kommentar blev oprettet på skaden.")
+            print(f"Kommentar-id: {kommentar_id}")
+            print(f"Titel: {titel}")
+            print(f"Hoveddokument: {faktisk_hoveddokument}")
+            print(f"Bilag: {faktisk_bilag}")
+
+        else:
+            logger.info(
+                "Kommentarstate findes allerede. "
+                "Kommentaren oprettes ikke igen. "
+                "Skade-id: %s.",
+                skade_id,
+            )
+
+            print("Kommentar allerede oprettet i en tidligere kørsel.")
 
         print("=" * 80)
         print("RESULTAT: Behandlingen er gennemført.")
