@@ -294,6 +294,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "automation-server-client" },
+    { name = "playwright" },
     { name = "q-haderslev-vbo" },
     { name = "q-insubiz" },
 ]
@@ -306,6 +307,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "automation-server-client", git = "https://github.com/odense-rpa/automation-server-client.git?tag=v0.3.0" },
+    { name = "playwright", specifier = ">=1.59.0" },
     { name = "q-haderslev-vbo", git = "https://github.com/haderslev-rpa/q-haderslev-vbo.git" },
     { name = "q-insubiz", git = "https://github.com/haderslev-rpa/q-insubiz.git?branch=main" },
 ]

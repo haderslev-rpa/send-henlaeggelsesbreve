@@ -8,6 +8,7 @@ dependencies = [
     "automation-server-client",
     "q-haderslev-vbo",
     "q-insubiz",
+    "playwright>=1.59.0",
 ]
 
 [tool.uv.sources]
@@ -17,3 +18,6 @@ q-insubiz = { git = "https://github.com/haderslev-rpa/q-insubiz.git", branch = "
 
 [dependency-groups]
 dev = ["pytest>=9.0.0"]
+
+[tool.uv]
+package = false

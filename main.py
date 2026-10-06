@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Entry point til send-henlaeggelsesbreve.
 
 Fyld køen: uv run --env-file .env python main.py --queue
@@ -10,21 +8,32 @@ main.py ejer browser, login, API-klient, recorder og work item-afslutning.
 behandel.py udfører forretningsprocessen.
 """
 
+from __future__ import annotations
+
 import argparse
 import asyncio
-import inspect
 import logging
 from typing import Any, Final
 
-from automation_server_client import AutomationServer, WorkItemError, Workqueue
+from automation_server_client import (
+    AutomationServer,
+    WorkItemError,
+    Workqueue,
+)
 from playwright.async_api import Page
-from q_haderslev_vbo.automation_server.ats_update_item_data import update_item_data
-from q_haderslev_vbo.playwright.browser_session import BrowserSession
-from q_haderslev_vbo.playwright.playwright_run_recorder import PlaywrightRunRecorder
-from q_insubiz.api_client import create_api_client_from_request_context
+from q_haderslev_vbo.automation_server.ats_update_item_data import (
+    update_item_data,
+)
+from q_haderslev_vbo.playwright.browser_session import (
+    BrowserSession,
+)
+from q_insubiz.api.client import InsubizApiClient
+from q_insubiz.api_client import (
+    create_api_client_from_context,
+)
 from q_insubiz.functionality.launch import launch_insubiz
 
-import config
+import configuration
 from behandel import behandel_page
 from populate_queue import populate_queue
 
@@ -61,9 +70,9 @@ def _initialiser_automation_server() -> None:
 
 
 def _hent_queue_id() -> int | None:
-    """Henter et eventuelt workqueue-id fra config.py."""
-    get_queue_id = getattr(config, "get_queue_id", None)
-    queue_id = get_queue_id() if callable(get_queue_id) else getattr(config, "QUEUE_ID", None)
+    """Henter et eventuelt workqueue-id fra configuration.py."""
+    get_queue_id = getattr(configuration, "get_queue_id", None)
+    queue_id = get_queue_id() if callable(get_queue_id) else getattr(configuration, "QUEUE_ID", None)
     if queue_id is None:
         return None
     if isinstance(queue_id, bool):
@@ -82,15 +91,15 @@ def _hent_queue_id() -> int | None:
 
 
 def _hent_queue_name() -> str:
-    """Henter et eventuelt workqueue-navn fra config.py."""
-    get_queue_name = getattr(config, "get_queue_name", None)
+    """Henter et eventuelt workqueue-navn fra configuration.py."""
+    get_queue_name = getattr(configuration, "get_queue_name", None)
     if callable(get_queue_name):
         queue_name = get_queue_name()
     else:
         queue_name = (
-            getattr(config, "QUEUE_NAME", None)
-            or getattr(config, "WORKQUEUE_NAME", None)
-            or getattr(config, "WORK_QUEUE_NAME", None)
+            getattr(configuration, "QUEUE_NAME", None)
+            or getattr(configuration, "WORKQUEUE_NAME", None)
+            or getattr(configuration, "WORK_QUEUE_NAME", None)
             or ""
         )
     return str(queue_name).strip()
@@ -119,84 +128,96 @@ def _hent_workqueue() -> Workqueue:
         logger.info("Workqueue hentet via navn. Kønavn: %s.", queue_name)
         return workqueue
     raise RuntimeError(
-        "Workqueue-konfigurationen mangler. Angiv config.QUEUE_ID "
-        "eller config.QUEUE_NAME."
+        "Workqueue-konfigurationen mangler. Angiv configuration.QUEUE_ID "
+        "eller configuration.QUEUE_NAME."
     )
 
 
-async def _await_if_needed(value: Any) -> Any:
-    """Awaiter værdien, hvis den er awaitable."""
-    if inspect.isawaitable(value):
-        return await value
-    return value
 
 
-def _hent_headless() -> bool:
-    """Henter browserens headless-indstilling."""
-    get_headless = getattr(config, "get_headless", None)
-    headless = get_headless() if callable(get_headless) else getattr(config, "HEADLESS", True)
+
+def _hent_headless(*, debug: bool, queue_mode: bool) -> bool:
+    """Returnerer headless for den valgte mode uden skjulte fallback-værdier."""
+    if queue_mode:
+        headless = configuration.QUEUE_HEADLESS
+    elif debug:
+        headless = configuration.DEBUG_HEADLESS
+    else:
+        headless = configuration.HEADLESS
     if not isinstance(headless, bool):
-        raise TypeError(f"HEADLESS skal være True eller False. Modtog: {headless!r}.")
+        raise TypeError("Browserens headless-indstilling skal være boolsk.")
     return headless
 
 
-async def _opret_browser_session() -> BrowserSession:
-    """Opretter og starter processens BrowserSession."""
-    headless = _hent_headless()
-    try:
-        browser_session = BrowserSession(headless=headless)
-    except TypeError:
-        browser_session = BrowserSession()
-    start_method = getattr(browser_session, "start", None)
-    if callable(start_method):
-        await _await_if_needed(start_method())
-    return browser_session
-
-
-async def _hent_page(*, browser_session: BrowserSession) -> Page:
-    """Henter eller opretter en åben Page."""
-    for attribute_name in ("page", "active_page"):
-        page = getattr(browser_session, attribute_name, None)
-        if page is None:
-            continue
-        page = await _await_if_needed(page)
-        if page is not None and not page.is_closed():
-            return page
-    new_page_method = getattr(browser_session, "new_page", None)
-    if callable(new_page_method):
-        page = await _await_if_needed(new_page_method())
-        if page is not None and not page.is_closed():
-            return page
-    context = await _await_if_needed(getattr(browser_session, "context", None))
-    if context is not None:
-        page = await context.new_page()
-        if page is not None and not page.is_closed():
-            return page
-    raise RuntimeError(
-        "Der kunne ikke hentes eller oprettes en Playwright-side fra BrowserSession."
+async def _opret_browser_session(
+    *, debug: bool, queue_mode: bool,
+) -> tuple[BrowserSession, Page, InsubizApiClient]:
+    """Starter én browser, logger ind og opretter klient på samme context."""
+    session = BrowserSession(
+        headless=_hent_headless(debug=debug, queue_mode=queue_mode),
+        debug=debug,
     )
-
-
-async def _luk_browser_session(*, browser_session: BrowserSession | None) -> None:
-    """Lukker procesbrowseren kontrolleret."""
-    if browser_session is None:
-        return
-    close_method = getattr(browser_session, "close", None)
-    if not callable(close_method):
-        return
+    api_client: InsubizApiClient | None = None
     try:
-        await _await_if_needed(close_method())
+        await session.start()
+        page = await session.new_page()
+        if session.context is None or page.is_closed():
+            raise RuntimeError("BrowserSession oprettede ikke en aktiv side og context.")
+        if page.context is not session.context:
+            raise RuntimeError("Siden tilhører ikke BrowserSessions context.")
+        if session.recorder is None:
+            raise RuntimeError("BrowserSession mangler sin recorder efter start().")
+        await launch_insubiz(page=page, recorder=session.recorder)
+        api_client = create_api_client_from_context(
+            context=session.context, page=page,
+        )
+        logger.info("Insubiz-login gennemført. UI og API deler BrowserContext.")
+        return session, page, api_client
+    except BaseException as error:
+        await _tag_screenshot_ved_fejl(session=session, error=error)
+        await _luk_browser_session(browser_session=session, api_client=api_client)
+        raise
+
+
+
+
+
+async def _luk_browser_session(
+    *, browser_session: BrowserSession | None,
+    api_client: InsubizApiClient | None = None,
+) -> None:
+    """Frigiver klienten og lukker derefter BrowserSession, også ved fejl."""
+    try:
+        if api_client is not None:
+            try:
+                await api_client.close()
+            except Exception:
+                logger.warning("API-klienten kunne ikke frigives.", exc_info=True)
+    finally:
+        if browser_session is not None:
+            try:
+                await browser_session.close()
+            except Exception:
+                logger.warning("BrowserSession kunne ikke lukkes.", exc_info=True)
+
+
+async def _tag_screenshot_ved_fejl(
+    *, session: BrowserSession | None, error: BaseException,
+) -> None:
+    """Forsøger fejlscreenshot uden at skjule den oprindelige fejl."""
+    try:
+        if session is None or session.context is None:
+            return
+        pages = [page for page in session.context.pages if not page.is_closed()]
+        if pages:
+            await session.screenshot(
+                pages[-1], f"exception_{type(error).__name__}", always=True,
+            )
     except Exception:
-        logger.warning("BrowserSession kunne ikke lukkes korrekt.", exc_info=True)
+        logger.warning("Fejlscreenshot kunne ikke gemmes.", exc_info=True)
 
 
-def _opret_recorder(
-    *, browser_session: BrowserSession, debug: bool
-) -> PlaywrightRunRecorder:
-    """Opretter recorder også uden --debug til fejlscreenshots."""
-    return PlaywrightRunRecorder(
-        browser_session=browser_session, debug=debug, always=False
-    )
+
 
 
 def _hent_item_reference(item: Any) -> str:
@@ -276,9 +297,21 @@ def _fejlmarker_item(*, item: Any, message: str) -> None:
 
 
 async def _koer_queue_mode(*, workqueue: Workqueue, debug: bool) -> None:
-    """Fylder workqueuen med relevante skader."""
+    """Fylder køen via main.py's browser og delte API-klient. Rydder ikke køen."""
     logger.info("Queue mode startet. debug=%s.", debug)
-    await populate_queue(workqueue=workqueue, debug=debug)
+    session, _page, api_client = await _opret_browser_session(
+        debug=debug, queue_mode=True,
+    )
+    try:
+        await populate_queue(
+            workqueue=workqueue, debug=debug,
+            api_client=api_client, recorder=session.recorder,
+        )
+    except BaseException as error:
+        await _tag_screenshot_ved_fejl(session=session, error=error)
+        raise
+    finally:
+        await _luk_browser_session(browser_session=session, api_client=api_client)
     logger.info("Queue mode afsluttet.")
 
 
@@ -288,13 +321,10 @@ async def _koer_process_mode(*, workqueue: Workqueue, debug: bool) -> None:
     browser_session: BrowserSession | None = None
     api_client: Any | None = None
     try:
-        browser_session = await _opret_browser_session()
-        page = await _hent_page(browser_session=browser_session)
-        recorder = _opret_recorder(browser_session=browser_session, debug=debug)
-        await launch_insubiz(page=page, recorder=recorder)
-        api_client = create_api_client_from_request_context(
-            request_context=page.context.request
+        browser_session, page, api_client = await _opret_browser_session(
+            debug=debug, queue_mode=False,
         )
+        recorder = browser_session.recorder
         item = _hent_naeste_item(workqueue)
         if item is None:
             logger.info("Der findes ingen items til behandling.")
@@ -317,6 +347,7 @@ async def _koer_process_mode(*, workqueue: Workqueue, debug: bool) -> None:
                     reference,
                     error,
                 )
+                await _tag_screenshot_ved_fejl(session=browser_session, error=error)
                 _fejlmarker_item(item=item, message=str(error))
                 return
             except Exception as error:
@@ -324,6 +355,7 @@ async def _koer_process_mode(*, workqueue: Workqueue, debug: bool) -> None:
                     "Work item fejlede med en uventet fejl. Reference: %s.",
                     reference,
                 )
+                await _tag_screenshot_ved_fejl(session=browser_session, error=error)
                 _fejlmarker_item(
                     item=item,
                     message=(
@@ -335,22 +367,19 @@ async def _koer_process_mode(*, workqueue: Workqueue, debug: bool) -> None:
             # En fejl i afslutning skal fremgå tydeligt og må ikke skjules.
             _afslut_item(item)
             logger.info("Work item blev afsluttet. Reference: %s.", reference)
+    except BaseException as error:
+        await _tag_screenshot_ved_fejl(session=browser_session, error=error)
+        raise
     finally:
-        if api_client is not None:
-            try:
-                await api_client.close()
-            except Exception:
-                logger.warning(
-                    "Insubiz API-klienten kunne ikke frigives korrekt.",
-                    exc_info=True,
-                )
-        await _luk_browser_session(browser_session=browser_session)
+        await _luk_browser_session(
+            browser_session=browser_session, api_client=api_client,
+        )
 
 
 async def _async_main(*, queue_mode: bool, debug: bool) -> None:
     """Starter den valgte proceskørsel."""
     _initialiser_automation_server()
-    validate_config = getattr(config, "validate_config", None)
+    validate_config = getattr(configuration, "validate_config", None)
     if callable(validate_config):
         validate_config()
     workqueue = _hent_workqueue()

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Fylder Automation Server-køen med relevante skader fra Insubiz.
 
 Filen følger proces-skabelonens producer-del og ændrer ikke strukturen:
@@ -29,6 +27,8 @@ Work itemets box:
 Det komplette skadesvar gemmes ikke i work itemet.
 """
 
+from __future__ import annotations
+
 import inspect
 import logging
 from collections.abc import Iterable, Mapping
@@ -45,13 +45,13 @@ from q_haderslev_vbo.automation_server.ats_update_item_data import (
 from q_haderslev_vbo.playwright.playwright_run_recorder import (
     PlaywrightRunRecorder,
 )
-from q_insubiz.api_client import create_api_client
+from q_insubiz.api.client import InsubizApiClient
 from q_insubiz.functionality.skader import (
     SKADER_LISTE,
     hent_skade_via_id,
 )
 
-import config
+import configuration
 
 logger = logging.getLogger(__name__)
 logging.getLogger("q_insubiz").setLevel(logging.WARNING)
@@ -415,16 +415,16 @@ def _hent_standard_case(skade_detaljer: Mapping[str, Any]) -> bool:
 
 
 def _hent_statusser_der_skal_fjernes() -> frozenset[str]:
-    """Henter statusserne fra den nye eller tidligere config-kontrakt."""
+    """Henter statusserne fra den nye eller tidligere configuration-kontrakt."""
     configured_statuses = getattr(
-        config,
+        configuration,
         "STATUSSER_DER_SKAL_FJERNES",
         None,
     )
 
     if configured_statuses is None:
         legacy_status = getattr(
-            config,
+            configuration,
             "STATUS_DER_SKAL_FJERNES",
             None,
         )
@@ -475,7 +475,7 @@ def _undertype_skal_beholdes(skade: Mapping[str, Any]) -> bool:
     )
 
     return _normaliser_tekst(undertype) == _normaliser_tekst(
-        config.INCIDENT_SUBTYPE_DER_SKAL_BEHOLDES
+        configuration.INCIDENT_SUBTYPE_DER_SKAL_BEHOLDES
     )
 
 
@@ -491,7 +491,7 @@ def _type_skal_beholdes(skade: Mapping[str, Any]) -> bool:
     )
 
     return _normaliser_tekst(skadetype) == _normaliser_tekst(
-        config.INCIDENT_TYPE_DER_SKAL_BEHOLDES
+        configuration.INCIDENT_TYPE_DER_SKAL_BEHOLDES
     )
 
 
@@ -501,20 +501,20 @@ def _type_skal_beholdes(skade: Mapping[str, Any]) -> bool:
 
 
 def _hent_queue_id() -> int:
-    queue_id = getattr(config, "QUEUE_ID", None)
+    queue_id = getattr(configuration, "QUEUE_ID", None)
 
     if isinstance(queue_id, bool):
-        raise TypeError("config.QUEUE_ID må ikke være boolsk.")
+        raise TypeError("configuration.QUEUE_ID må ikke være boolsk.")
 
     try:
         normaliseret_queue_id = int(queue_id)
     except (TypeError, ValueError) as error:
         raise TypeError(
-            "config.QUEUE_ID skal være et heltal eller tekst med et heltal."
+            "configuration.QUEUE_ID skal være et heltal eller tekst med et heltal."
         ) from error
 
     if normaliseret_queue_id <= 0:
-        raise ValueError("config.QUEUE_ID skal være større end 0.")
+        raise ValueError("configuration.QUEUE_ID skal være større end 0.")
 
     return normaliseret_queue_id
 
@@ -642,10 +642,13 @@ async def populate_queue(
     workqueue: Workqueue,
     debug: bool = False,
     recorder: PlaywrightRunRecorder | None = None,
+    *,
+    api_client: InsubizApiClient,
 ) -> int:
     """Henter, filtrerer og lægger kun nye skader i workqueuen.
 
     Dubletkontrollen udføres både før detailkaldet og lige før add_item.
+    main.py leverer den delte API-klient og ejer browserens livscyklus.
     Funktionen returnerer antallet af nye items, som faktisk blev oprettet.
     """
     if workqueue is None:
@@ -654,153 +657,148 @@ async def populate_queue(
     if not isinstance(debug, bool):
         raise TypeError("debug skal være True eller False.")
 
-    api_client = create_api_client(
-        headless=config.HEADLESS,
-        debug=debug,
-        recorder=recorder,
-    )
-
+    # main.py ejer klienten og browseren. Denne funktion lukker ingen af dem.
+    if api_client is None:
+        raise ValueError("Den delte Insubiz API-klient mangler.")
+    del recorder
     resultat = PopulateQueueResultat()
 
-    try:
-        skader = await SKADER_LISTE(
-            api_client=api_client,
-            customer_id=config.CUSTOMER_ID,
-            customer_segmentation_1=(config.CUSTOMER_SEGMENTATION_1),
-            customer_segmentation_2=(config.CUSTOMER_SEGMENTATION_2),
-            claim_group_id=config.CLAIM_GROUP_ID,
-            status_id=config.STATUS_ID,
-            created_year_from=config.CREATED_YEAR_FROM,
-            created_year_to=config.CREATED_YEAR_TO,
-            incident_year_from=config.INCIDENT_YEAR_FROM,
-            incident_year_to=config.INCIDENT_YEAR_TO,
-            show_tree_data=config.SHOW_TREE_DATA,
-            columns=config.SKADELISTE_COLUMNS,
+    skader = await SKADER_LISTE(
+        api_client=api_client,
+        customer_id=configuration.CUSTOMER_ID,
+        customer_segmentation_1=(configuration.CUSTOMER_SEGMENTATION_1),
+        customer_segmentation_2=(configuration.CUSTOMER_SEGMENTATION_2),
+        claim_group_id=configuration.CLAIM_GROUP_ID,
+        status_id=configuration.STATUS_ID,
+        created_year_from=configuration.CREATED_YEAR_FROM,
+        created_year_to=configuration.CREATED_YEAR_TO,
+        incident_year_from=configuration.INCIDENT_YEAR_FROM,
+        incident_year_to=configuration.INCIDENT_YEAR_TO,
+        show_tree_data=configuration.SHOW_TREE_DATA,
+        columns=configuration.SKADELISTE_COLUMNS,
+    )
+
+    if not isinstance(skader, list):
+        raise TypeError(
+            "SKADER_LISTE returnerede et uventet format. "
+            f"Modtog: {type(skader).__name__}."
         )
 
-        if not isinstance(skader, list):
-            raise TypeError(
-                "SKADER_LISTE returnerede et uventet format. "
-                f"Modtog: {type(skader).__name__}."
+    resultat.skader_laest = len(skader)
+    kandidater: list[dict[str, Any]] = []
+
+    for skade in skader:
+        if not isinstance(skade, dict):
+            logger.warning(
+                "En skadelisterække blev sprunget over, fordi rækken "
+                "ikke var en dictionary. Type: %s.",
+                type(skade).__name__,
             )
+            continue
 
-        resultat.skader_laest = len(skader)
-        kandidater: list[dict[str, Any]] = []
+        if not _status_skal_beholdes(skade):
+            resultat.fravalgt_status += 1
+            continue
 
-        for skade in skader:
-            if not isinstance(skade, dict):
-                logger.warning(
-                    "En skadelisterække blev sprunget over, fordi rækken "
-                    "ikke var en dictionary. Type: %s.",
-                    type(skade).__name__,
-                )
-                continue
+        if not _undertype_skal_beholdes(skade):
+            resultat.fravalgt_undertype += 1
+            continue
 
-            if not _status_skal_beholdes(skade):
-                resultat.fravalgt_status += 1
-                continue
+        if not _type_skal_beholdes(skade):
+            resultat.fravalgt_type += 1
+            continue
 
-            if not _undertype_skal_beholdes(skade):
-                resultat.fravalgt_undertype += 1
-                continue
+        skade_id = _hent_skade_id(skade)
 
-            if not _type_skal_beholdes(skade):
-                resultat.fravalgt_type += 1
-                continue
-
-            skade_id = _hent_skade_id(skade)
-
-            # Første dubletkontrol sparer et dyrere detaljekald til Insubiz.
-            if _item_findes_i_koeen(skade_id=skade_id):
-                resultat.allerede_i_koe += 1
-
-                if debug:
-                    logger.info(
-                        "Skade findes allerede i ATS-køen. Skade-id: %s. Queue-id: %s.",
-                        skade_id,
-                        _hent_queue_id(),
-                    )
-
-                continue
-
-            kandidater.append(skade)
-
-        resultat.kandidater_efter_listefiltre = len(kandidater)
-
-        for skade_fra_liste in kandidater:
-            skade_id = _hent_skade_id(skade_fra_liste)
-
-            skade_detaljer = await hent_skade_via_id(
-                api_client=api_client,
-                skade_id=skade_id,
-            )
-
-            if not isinstance(skade_detaljer, dict):
-                raise TypeError(
-                    "hent_skade_via_id returnerede et uventet format. "
-                    f"Skade-id: {skade_id}. "
-                    f"Modtog: {type(skade_detaljer).__name__}."
-                )
-
-            standard_case = _hent_standard_case(skade_detaljer)
-
-            if standard_case is not config.STANDARD_CASE_SKAL_VAERE:
-                resultat.fravalgt_standard_case += 1
-                continue
-
-            # Disse felter hentes først nu. Detaljesvaret fungerer som fallback,
-            # hvis en kolonne ikke fandtes eller var tom i SKADER_LISTE.
-            skade_nr = _hent_skade_nr(
-                skade_fra_liste=skade_fra_liste,
-                skade_detaljer=skade_detaljer,
-                skade_id=skade_id,
-            )
-            incident_type = _hent_incident_type(
-                skade_fra_liste=skade_fra_liste,
-                skade_detaljer=skade_detaljer,
-            )
-            incident_subtype = _hent_incident_subtype(
-                skade_fra_liste=skade_fra_liste,
-                skade_detaljer=skade_detaljer,
-            )
-
-            # Anden kontrol reducerer kapløb mellem samtidige producer-kørsler.
-            if _item_findes_i_koeen(skade_id=skade_id):
-                resultat.allerede_i_koe += 1
-
-                if debug:
-                    logger.info(
-                        "Skade blev fundet i ATS ved anden kontrol. Skade-id: %s.",
-                        skade_id,
-                    )
-
-                continue
-
-            data_json = _opret_work_item_data(
-                skade_id=skade_id,
-                skade_nr=skade_nr,
-                standard_case=standard_case,
-                incident_type=incident_type,
-                incident_subtype=incident_subtype,
-            )
-
-            await _add_item(
-                workqueue=workqueue,
-                data=data_json,
-                reference=str(skade_id),
-            )
-
-            resultat.lagt_i_koe += 1
+        # Første dubletkontrol sparer et dyrere detaljekald til Insubiz.
+        if _item_findes_i_koeen(skade_id=skade_id):
+            resultat.allerede_i_koe += 1
 
             if debug:
                 logger.info(
-                    "Skade lagt i kø. Skade-id: %s. Skade nr: %s.",
+                    "Skade findes allerede i ATS-køen. Skade-id: %s. Queue-id: %s.",
                     skade_id,
-                    skade_nr,
+                    _hent_queue_id(),
                 )
 
-    finally:
-        await api_client.close()
+            continue
+
+        kandidater.append(skade)
+
+    resultat.kandidater_efter_listefiltre = len(kandidater)
+
+    for skade_fra_liste in kandidater:
+        skade_id = _hent_skade_id(skade_fra_liste)
+
+        skade_detaljer = await hent_skade_via_id(
+            api_client=api_client,
+            skade_id=skade_id,
+        )
+
+        if not isinstance(skade_detaljer, dict):
+            raise TypeError(
+                "hent_skade_via_id returnerede et uventet format. "
+                f"Skade-id: {skade_id}. "
+                f"Modtog: {type(skade_detaljer).__name__}."
+            )
+
+        standard_case = _hent_standard_case(skade_detaljer)
+
+        if standard_case is not configuration.STANDARD_CASE_SKAL_VAERE:
+            resultat.fravalgt_standard_case += 1
+            continue
+
+        # Disse felter hentes først nu. Detaljesvaret fungerer som fallback,
+        # hvis en kolonne ikke fandtes eller var tom i SKADER_LISTE.
+        skade_nr = _hent_skade_nr(
+            skade_fra_liste=skade_fra_liste,
+            skade_detaljer=skade_detaljer,
+            skade_id=skade_id,
+        )
+        incident_type = _hent_incident_type(
+            skade_fra_liste=skade_fra_liste,
+            skade_detaljer=skade_detaljer,
+        )
+        incident_subtype = _hent_incident_subtype(
+            skade_fra_liste=skade_fra_liste,
+            skade_detaljer=skade_detaljer,
+        )
+
+        # Anden kontrol reducerer kapløb mellem samtidige producer-kørsler.
+        if _item_findes_i_koeen(skade_id=skade_id):
+            resultat.allerede_i_koe += 1
+
+            if debug:
+                logger.info(
+                    "Skade blev fundet i ATS ved anden kontrol. Skade-id: %s.",
+                    skade_id,
+                )
+
+            continue
+
+        data_json = _opret_work_item_data(
+            skade_id=skade_id,
+            skade_nr=skade_nr,
+            standard_case=standard_case,
+            incident_type=incident_type,
+            incident_subtype=incident_subtype,
+        )
+
+        await _add_item(
+            workqueue=workqueue,
+            data=data_json,
+            reference=str(skade_id),
+        )
+
+        resultat.lagt_i_koe += 1
+
+        if debug:
+            logger.info(
+                "Skade lagt i kø. Skade-id: %s. Skade nr: %s.",
+                skade_id,
+                skade_nr,
+            )
+
 
     logger.info(
         "Skader læst: %s. Fravalgt status: %s. "

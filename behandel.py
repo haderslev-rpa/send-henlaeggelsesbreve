@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Behandler ét work item i Send henlæggelsesbreve-processen.
 
 Forløb
@@ -27,6 +25,8 @@ Den samme BrowserContext bruges til:
 behandel.py opretter eller lukker ikke browser, BrowserContext,
 APIRequestContext eller API-klient.
 """
+
+from __future__ import annotations
 
 import logging
 from datetime import datetime
@@ -59,21 +59,9 @@ from q_insubiz.functionality.skader import (
     vaelg_dokumentskabelon,
 )
 
-import config
+import configuration
 
 logger = logging.getLogger(__name__)
-
-
-# ------------------------------------------------------------
-# INSUBIZ-NAVIGATION
-# ------------------------------------------------------------
-
-INSUBIZ_BASE_URL = "https://start.insubiz.dk"
-
-NAVIGATION_TIMEOUT_MS = 30_000
-
-UI_WAIT_MS = 1_500
-
 
 # ------------------------------------------------------------
 # STATES
@@ -520,15 +508,15 @@ async def behandel_page(
                 field_name=f"box.{BOX_DIGITAL_POST_BILAG}",
             )
 
-            tidspunkt = datetime.now(config.KOMMENTAR_TIDSZONE)
+            tidspunkt = datetime.now(configuration.KOMMENTAR_TIDSZONE)
             titel = (
-                config.KOMMENTAR_TITEL_PREFIX
-                + tidspunkt.strftime(config.KOMMENTAR_DATOFORMAT)
+                configuration.KOMMENTAR_TITEL_PREFIX
+                + tidspunkt.strftime(configuration.KOMMENTAR_DATOFORMAT)
             )
             kommentartekst = (
-                f"{config.KOMMENTAR_HOVEDDOKUMENT_LABEL}: "
+                f"{configuration.KOMMENTAR_HOVEDDOKUMENT_LABEL}: "
                 f"{faktisk_hoveddokument}\n"
-                f"{config.KOMMENTAR_BILAG_LABEL}: {faktisk_bilag}"
+                f"{configuration.KOMMENTAR_BILAG_LABEL}: {faktisk_bilag}"
             )
 
             kommentar = await opret_kommentar_paa_skade(
@@ -645,7 +633,7 @@ async def _aabn_skade_via_id(
         field_name="skade_id",
     )
 
-    skade_url = f"{INSUBIZ_BASE_URL}/incident/{normalized_skade_id}"
+    skade_url = f"{configuration.INSUBIZ_BASE_URL}/incident/{normalized_skade_id}"
 
     logger.info(
         "Åbner skade i Insubiz. Skade-id: %s.",
@@ -656,7 +644,7 @@ async def _aabn_skade_via_id(
         response = await page.goto(
             skade_url,
             wait_until="domcontentloaded",
-            timeout=NAVIGATION_TIMEOUT_MS,
+            timeout=configuration.NAVIGATION_TIMEOUT_MS,
         )
     except PlaywrightTimeoutError as error:
         raise WorkItemError(
@@ -664,7 +652,7 @@ async def _aabn_skade_via_id(
             f"Skade-id: {normalized_skade_id}. "
             f"URL: {skade_url}. "
             "Timeout: "
-            f"{NAVIGATION_TIMEOUT_MS // 1_000} sekunder."
+            f"{configuration.NAVIGATION_TIMEOUT_MS // 1_000} sekunder."
         ) from error
 
     if response is not None and response.status >= 400:
@@ -678,7 +666,7 @@ async def _aabn_skade_via_id(
 
     await page.wait_for_load_state("domcontentloaded")
 
-    await page.wait_for_timeout(UI_WAIT_MS)
+    await page.wait_for_timeout(configuration.UI_WAIT_MS)
 
     forventet_url_del = f"/incident/{normalized_skade_id}"
 
@@ -699,7 +687,7 @@ async def _aabn_skade_via_id(
     try:
         await synligt_skade_id.wait_for(
             state="visible",
-            timeout=NAVIGATION_TIMEOUT_MS,
+            timeout=configuration.NAVIGATION_TIMEOUT_MS,
         )
     except PlaywrightTimeoutError as error:
         raise WorkItemError(
@@ -860,13 +848,13 @@ def _hent_aktuel_status(
 def _hent_statusser_der_ikke_maa_behandles() -> frozenset[str]:
     """Henter statusser, som ikke må behandles."""
     configured_statuses = getattr(
-        config,
+        configuration,
         "STATUSSER_DER_SKAL_FJERNES",
         None,
     )
 
     if configured_statuses is None:
-        raise WorkItemError("config.STATUSSER_DER_SKAL_FJERNES mangler.")
+        raise WorkItemError("configuration.STATUSSER_DER_SKAL_FJERNES mangler.")
 
     if isinstance(
         configured_statuses,
@@ -882,11 +870,11 @@ def _hent_statusser_der_ikke_maa_behandles() -> frozenset[str]:
         )
     except TypeError as error:
         raise WorkItemError(
-            "config.STATUSSER_DER_SKAL_FJERNES skal være en samling af tekstværdier."
+            "configuration.STATUSSER_DER_SKAL_FJERNES skal være en samling af tekstværdier."
         ) from error
 
     if not normalized_statuses:
-        raise WorkItemError("config.STATUSSER_DER_SKAL_FJERNES må ikke være tom.")
+        raise WorkItemError("configuration.STATUSSER_DER_SKAL_FJERNES må ikke være tom.")
 
     return normalized_statuses
 
@@ -1387,14 +1375,14 @@ def _find_box_feltnavn(
 def _hent_digital_post_test() -> bool:
     """Henter Digital Post-testindstillingen."""
     value = getattr(
-        config,
+        configuration,
         "DIGITAL_POST_TEST",
         None,
     )
 
     if not isinstance(value, bool):
         raise WorkItemError(
-            "config.DIGITAL_POST_TEST skal være boolsk. "
+            "configuration.DIGITAL_POST_TEST skal være boolsk. "
             f"Modtog: {type(value).__name__}."
         )
 
@@ -1406,19 +1394,19 @@ def _hent_konfigurationstekst(
     attribute_name: str,
     field_name: str,
 ) -> str:
-    """Henter og validerer en tekstværdi fra config."""
+    """Henter og validerer en tekstværdi fra configuration."""
     value = getattr(
-        config,
+        configuration,
         attribute_name,
         None,
     )
 
     if value is None:
-        raise WorkItemError(f"Processens konfiguration mangler config.{field_name}.")
+        raise WorkItemError(f"Processens konfiguration mangler configuration.{field_name}.")
 
     return _normaliser_paakraevet_tekst(
         value=value,
-        field_name=f"config.{field_name}",
+        field_name=f"configuration.{field_name}",
     )
 
 
