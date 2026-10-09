@@ -258,29 +258,37 @@ def _kontroller_afsluttende_state(item: Any) -> dict[str, Any]:
     return data
 
 
+# Start: _afslut_item
 def _afslut_item(item: Any) -> None:
-    """Gem JSON-status og afslut derefter kø-itemet via klientens complete()."""
+    """Afslutter ATS-itemet uden at tilføje en Completed-state."""
+    from afslut_skade import STATE_SKADE_AFSLUTTET
+    from behandel import _har_state
+
     data = _kontroller_afsluttende_state(item)
+
+    # Skadeafslutningen skal være registreret først.
+    if not _har_state(data=data, state=STATE_SKADE_AFSLUTTET):
+        raise RuntimeError(
+            "State 5.0 mangler; ATS-itemet afsluttes ikke."
+        )
+
     complete_method = getattr(item, "complete", None)
     if not callable(complete_method):
-        raise RuntimeError("Work itemet har ingen complete()-metode.")
-    status_data = data.get("status")
-    already_recorded = (
-        isinstance(status_data, dict)
-        and status_data.get("status") == COMPLETED_STATUS
-        and status_data.get("status_code") == COMPLETED_STATUS_CODE
-    )
-    if not already_recorded:
-        update_item_data(
-            data,
-            item=item,
-            status=COMPLETED_STATUS,
-            status_code=COMPLETED_STATUS_CODE,
-            state=COMPLETED_STATE,
+        raise RuntimeError(
+            "Work itemet har ingen complete()-metode."
         )
-    # Et vellykket item.update() ændrer ikke nødvendigvis køens egen status.
-    # Undlad at sluge TypeError: en fejl i klienten skal kunne ses i loggen.
+
+    # Gem status, men tilføj ingen ekstra state.
+    update_item_data(
+        data,
+        item=item,
+        status=COMPLETED_STATUS,
+        status_code=COMPLETED_STATUS_CODE,
+    )
+
+    # Færdigmeld selve kø-itemet.
     complete_method(COMPLETED_STATUS)
+# Slut: _afslut_item
 
 
 def _fejlmarker_item(*, item: Any, message: str) -> None:
@@ -315,25 +323,44 @@ async def _koer_queue_mode(*, workqueue: Workqueue, debug: bool) -> None:
     logger.info("Queue mode afsluttet.")
 
 
-async def _koer_process_mode(*, workqueue: Workqueue, debug: bool) -> None:
-    """Logger ind og behandler næste item inden for itemets kontekst."""
+# Start: _koer_process_mode
+async def _koer_process_mode(
+    *,
+    workqueue: Workqueue,
+    debug: bool,
+) -> None:
+    """Behandler brevet, afslutter skaden og afslutter ATS-itemet."""
+    from afslut_skade import (
+        STATE_SKADE_AFSLUTTET,
+        afslut_skade_efter_brev,
+    )
+
     logger.info("Process mode startet. debug=%s.", debug)
+
     browser_session: BrowserSession | None = None
     api_client: Any | None = None
+
     try:
         browser_session, page, api_client = await _opret_browser_session(
-            debug=debug, queue_mode=False,
+            debug=debug,
+            queue_mode=False,
         )
         recorder = browser_session.recorder
+
         item = _hent_naeste_item(workqueue)
         if item is None:
             logger.info("Der findes ingen items til behandling.")
             return
+
         reference = _hent_item_reference(item)
-        logger.info("Behandler work item. Reference: %s.", reference)
-        # Klientens kontekst frigiver låsen ved udgang; complete sker indenfor.
+        logger.info(
+            "Behandler work item. Reference: %s.",
+            reference,
+        )
+
         with item:
             try:
+                # Det eksisterende brev- og kommentarflow bevares.
                 await behandel_page(
                     item=item,
                     session=browser_session,
@@ -341,21 +368,57 @@ async def _koer_process_mode(*, workqueue: Workqueue, debug: bool) -> None:
                     api_client=api_client,
                     recorder=recorder,
                 )
+
+                # Nyt procestrin: afslut og efterkontrollér skaden.
+                await afslut_skade_efter_brev(
+                    item=item,
+                    api_client=api_client,
+                )
+
+                # Ekstra værn før ATS-itemet afsluttes.
+                data = item.data
+                states = (
+                    data.get("state")
+                    if isinstance(data, dict)
+                    else None
+                )
+                if not isinstance(states, list) or not any(
+                    isinstance(state, str)
+                    and STATE_SKADE_AFSLUTTET in state
+                    for state in states
+                ):
+                    raise WorkItemError(
+                        "Afslutningsstate for Insubiz mangler. "
+                        "ATS-itemet afsluttes ikke."
+                    )
+
             except WorkItemError as error:
                 logger.error(
-                    "Work item kunne ikke behandles. Reference: %s. Fejl: %s",
+                    "Work item kunne ikke behandles. "
+                    "Reference: %s. Fejl: %s",
                     reference,
                     error,
                 )
-                await _tag_screenshot_ved_fejl(session=browser_session, error=error)
-                _fejlmarker_item(item=item, message=str(error))
+                await _tag_screenshot_ved_fejl(
+                    session=browser_session,
+                    error=error,
+                )
+                _fejlmarker_item(
+                    item=item,
+                    message=str(error),
+                )
                 return
+
             except Exception as error:
                 logger.exception(
-                    "Work item fejlede med en uventet fejl. Reference: %s.",
+                    "Work item fejlede med en uventet fejl. "
+                    "Reference: %s.",
                     reference,
                 )
-                await _tag_screenshot_ved_fejl(session=browser_session, error=error)
+                await _tag_screenshot_ved_fejl(
+                    session=browser_session,
+                    error=error,
+                )
                 _fejlmarker_item(
                     item=item,
                     message=(
@@ -364,17 +427,27 @@ async def _koer_process_mode(*, workqueue: Workqueue, debug: bool) -> None:
                     ),
                 )
                 return
-            # En fejl i afslutning skal fremgå tydeligt og må ikke skjules.
+
+            # Completed sker først efter bekræftet Insubiz-afslutning.
             _afslut_item(item)
-            logger.info("Work item blev afsluttet. Reference: %s.", reference)
+            logger.info(
+                "Skaden og ATS-itemet blev afsluttet. Reference: %s.",
+                reference,
+            )
+
     except BaseException as error:
-        await _tag_screenshot_ved_fejl(session=browser_session, error=error)
+        await _tag_screenshot_ved_fejl(
+            session=browser_session,
+            error=error,
+        )
         raise
+
     finally:
         await _luk_browser_session(
-            browser_session=browser_session, api_client=api_client,
+            browser_session=browser_session,
+            api_client=api_client,
         )
-
+# Slut: _koer_process_mode
 
 async def _async_main(*, queue_mode: bool, debug: bool) -> None:
     """Starter den valgte proceskørsel."""
