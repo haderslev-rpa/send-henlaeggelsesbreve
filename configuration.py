@@ -19,9 +19,9 @@ CURRENT_YEAR: int = datetime.now(
 # ------------------------------------------------------------
 
 HEADLESS: bool = True
-# Lokal worker-debug viser browseren. Queue-mode forbliver headless.
 DEBUG_HEADLESS: bool = False
 QUEUE_HEADLESS: bool = True
+PLAYWRIGHT_SKIP_BROWSER_GC: bool = True
 
 # Navigation til den konkrete skade. Eksisterende ventelogik er bevaret.
 INSUBIZ_BASE_URL: str = "https://start.insubiz.dk"
