@@ -66,11 +66,54 @@ from behandel import behandel_page  # noqa: E402
 from populate_queue import populate_queue  # noqa: E402
 
 
+# ------------------------------------------------------------
+# LOGGING
+# ------------------------------------------------------------
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    format=(
+        "%(asctime)s [%(levelname)s] "
+        "%(name)s: %(message)s"
+    ),
     force=True,
 )
+
+# Automation Server sender proceslogs via HTTP.
+#
+# Hvis httpx logger POST-kaldet til /audit-logs på INFO-niveau,
+# forsøger audit-handleren at sende denne loglinje som en ny audit-log.
+# Det skaber et rekursivt log-loop.
+logging.getLogger(
+    "httpx"
+).setLevel(
+    logging.WARNING
+)
+
+logging.getLogger(
+    "httpcore"
+).setLevel(
+    logging.WARNING
+)
+
+logging.getLogger(
+    "automation_server_client"
+).setLevel(
+    logging.WARNING
+)
+
+logging.getLogger(
+    "debugpy"
+).setLevel(
+    logging.WARNING
+)
+
+logging.getLogger(
+    "playwright"
+).setLevel(
+    logging.WARNING
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -246,6 +289,7 @@ async def _opret_browser_session(
     session = BrowserSession(
         headless=headless,
         debug=debug,
+        use_regular_chromium=configuration.USE_REGULAR_CHROMIUM,
     )
     api_client: InsubizApiClient | None = None
 

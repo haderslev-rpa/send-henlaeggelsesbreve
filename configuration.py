@@ -21,6 +21,7 @@ CURRENT_YEAR: int = datetime.now(
 HEADLESS: bool = True
 DEBUG_HEADLESS: bool = False
 QUEUE_HEADLESS: bool = True
+USE_REGULAR_CHROMIUM: bool = True
 PLAYWRIGHT_SKIP_BROWSER_GC: bool = True
 
 # Navigation til den konkrete skade. Eksisterende ventelogik er bevaret.
