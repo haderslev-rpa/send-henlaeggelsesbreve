@@ -492,6 +492,36 @@ async def behandel_page(
                 forsendelsestype=forsendelsestype,
                 hoveddokument_navn=hoveddokument_navn,
                 bilag_navn=bilag_navn,
+                hoveddokument_id=(
+                    valgte_dokumenter[
+                        "hoveddokument_id"
+                    ]
+                ),
+                bilag_id=(
+                    valgte_dokumenter[
+                        "bilag_id"
+                    ]
+                ),
+                hoveddokument_oprettet_af=(
+                    valgte_dokumenter[
+                        "hoveddokument_oprettet_af"
+                    ]
+                ),
+                bilag_oprettet_af=(
+                    valgte_dokumenter[
+                        "bilag_oprettet_af"
+                    ]
+                ),
+                hoveddokument_oprettet=(
+                    valgte_dokumenter[
+                        "hoveddokument_oprettet"
+                    ]
+                ),
+                bilag_oprettet=(
+                    valgte_dokumenter[
+                        "bilag_oprettet"
+                    ]
+                ),
                 test=digital_post_test,
                 recorder=recorder,
             )
