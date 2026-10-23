@@ -90,6 +90,13 @@ DOKUMENTTITEL: str = "Brev fra Haderslev Kommune"
 
 HOVEDDOKUMENT_NAVN: str = SKABELON_NAVN
 
+# ------------------------------------------------------------
+# DOKUMENTVALG EFTER STATE 2.0
+# ------------------------------------------------------------
+
+DOKUMENT_OPRETTET_AF: str = "ForsikringsService"
+DOKUMENT_DIRECTORY_ID: int = 0
+DOKUMENT_TIDSFORSKEL_SEKUNDER: int = 1
 
 # ------------------------------------------------------------
 # DIGITAL POST

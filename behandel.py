@@ -29,7 +29,7 @@ APIRequestContext eller API-klient.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from automation_server_client import WorkItemError
@@ -53,6 +53,7 @@ from q_insubiz.functionality.skader import (
     download_easy_rapport_og_gem_i_mappe,
     gem_dokument_fra_skabelon,
     hent_skade_via_id,
+    hent_skadens_dokumenter,
     opret_dokument_fra_skabelon,
     opret_kommentar_paa_skade,
     send_digital_post,
@@ -110,6 +111,15 @@ SKADE_NR_FELTER = (
 BOX_DIGITAL_POST_HOVEDDOKUMENT = "Digital Post hoveddokument"
 BOX_DIGITAL_POST_BILAG = "Digital Post bilag"
 BOX_DIGITAL_POST_KOMMENTAR_ID = "Digital Post kommentar-id"
+BOX_DIGITAL_POST_HOVEDDOKUMENT_ID = "Digital Post hoveddokument-id"
+BOX_DIGITAL_POST_HOVEDDOKUMENT_OPRETTET = (
+    "Digital Post hoveddokument-oprettet"
+)
+BOX_DIGITAL_POST_BILAG_ID = "Digital Post bilag-id"
+BOX_DIGITAL_POST_BILAG_OPRETTET = "Digital Post bilag-oprettet"
+BOX_DIGITAL_POST_DOKUMENTER_OPRETTET_AF = (
+    "Digital Post dokumenter oprettet af"
+)
 
 
 # ------------------------------------------------------------
@@ -398,6 +408,72 @@ async def behandel_page(
             )
 
             print("EASY-rapport allerede oprettet i en tidligere kørsel.")
+
+        # --------------------------------------------------
+        # HENT OG FASTLÅS DOKUMENTER TIL DIGITAL POST
+        # --------------------------------------------------
+        valgte_dokumenter: dict[str, Any] | None = None
+
+        if not _har_state(
+            data=data,
+            state=STATE_DIGITAL_POST_SENDT,
+        ):
+            dokumentrespons = await hent_skadens_dokumenter(
+                api_client=api_client,
+                skade_id=skade_id,
+                directory_id=configuration.DOKUMENT_DIRECTORY_ID,
+            )
+
+            valgte_dokumenter = _vaelg_dokumenter_til_digital_post(
+                dokumentrespons=dokumentrespons,
+                skade_id=skade_id,
+                skade_nr=skade_nr,
+                hoveddokument_navn=hoveddokument_navn,
+                bilag_navn=bilag_navn,
+            )
+
+            hoveddokument_navn = valgte_dokumenter[
+                "hoveddokument_titel"
+            ]
+            bilag_navn = valgte_dokumenter["bilag_titel"]
+
+            update_item_data(
+                data,
+                item=item,
+                box_updates={
+                    BOX_DIGITAL_POST_HOVEDDOKUMENT_ID: (
+                        valgte_dokumenter["hoveddokument_id"]
+                    ),
+                    BOX_DIGITAL_POST_HOVEDDOKUMENT_OPRETTET: (
+                        valgte_dokumenter[
+                            "hoveddokument_oprettet"
+                        ]
+                    ),
+                    BOX_DIGITAL_POST_BILAG_ID: (
+                        valgte_dokumenter["bilag_id"]
+                    ),
+                    BOX_DIGITAL_POST_BILAG_OPRETTET: (
+                        valgte_dokumenter["bilag_oprettet"]
+                    ),
+                    BOX_DIGITAL_POST_DOKUMENTER_OPRETTET_AF: (
+                        valgte_dokumenter["oprettet_af"]
+                    ),
+                },
+            )
+
+            logger.info(
+                "Dokumenter til Digital Post blev valgt via "
+                "Insubiz-metadata. Skade-id: %s. "
+                "Hoveddokument-id: %s. Bilag-id: %s. "
+                "Oprettet af: %r. Hoveddokument oprettet: %s. "
+                "Bilag oprettet: %s.",
+                skade_id,
+                valgte_dokumenter["hoveddokument_id"],
+                valgte_dokumenter["bilag_id"],
+                valgte_dokumenter["oprettet_af"],
+                valgte_dokumenter["hoveddokument_oprettet"],
+                valgte_dokumenter["bilag_oprettet"],
+            )
 
         # --------------------------------------------------
         # SEND DIGITAL POST
@@ -702,6 +778,395 @@ async def _aabn_skade_via_id(
         normalized_skade_id,
         page.url,
     )
+
+
+# ------------------------------------------------------------
+# DOKUMENTVALG VIA INSUBIZ API
+# ------------------------------------------------------------
+def _vaelg_dokumenter_til_digital_post(
+    *,
+    dokumentrespons: list[dict[str, Any]] | dict[str, Any],
+    skade_id: int,
+    skade_nr: str,
+    hoveddokument_navn: str,
+    bilag_navn: str,
+) -> dict[str, Any]:
+    """Vælger det nyeste sammenhørende dokumentpar til Digital Post.
+
+    Begge dokumenter skal være PDF-filer og være oprettet af den bruger,
+    der er angivet i configuration.DOKUMENT_OPRETTET_AF. Dokumenterne
+    skal samtidig være oprettet inden for den konfigurerede tidsforskel.
+
+    Output:
+        Returnerer et dictionary med entydige dokument-id'er, titler,
+        filnavne, oprettelsestidspunkter og oprettende bruger.
+    """
+    dokumenter = _udpak_dokumentliste(
+        dokumentrespons=dokumentrespons,
+        skade_id=skade_id,
+    )
+
+    forventet_bruger = _hent_konfigurationstekst(
+        attribute_name="DOKUMENT_OPRETTET_AF",
+        field_name="DOKUMENT_OPRETTET_AF",
+    )
+
+    directory_id = getattr(
+        configuration,
+        "DOKUMENT_DIRECTORY_ID",
+        None,
+    )
+    if (
+        isinstance(directory_id, bool)
+        or not isinstance(directory_id, int)
+        or directory_id < 0
+    ):
+        raise WorkItemError(
+            "configuration.DOKUMENT_DIRECTORY_ID skal være "
+            "et ikke-negativt heltal."
+        )
+
+    tidsforskel_sekunder = getattr(
+        configuration,
+        "DOKUMENT_TIDSFORSKEL_SEKUNDER",
+        None,
+    )
+    if (
+        isinstance(tidsforskel_sekunder, bool)
+        or not isinstance(tidsforskel_sekunder, int)
+        or tidsforskel_sekunder < 0
+    ):
+        raise WorkItemError(
+            "configuration.DOKUMENT_TIDSFORSKEL_SEKUNDER skal "
+            "være et ikke-negativt heltal."
+        )
+
+    forventet_hoveddokument_titel = _normaliser_paakraevet_tekst(
+        value=hoveddokument_navn,
+        field_name="hoveddokument_navn",
+    )
+    forventet_bilagstitel = (
+        f"{_normaliser_paakraevet_tekst(value=bilag_navn, field_name='bilag_navn')}"
+        f" - {skade_nr}"
+    )
+
+    hoveddokumenter: list[dict[str, Any]] = []
+    bilag: list[dict[str, Any]] = []
+
+    for dokument in dokumenter:
+        if not _dokument_er_oprettet_af(
+            dokument=dokument,
+            forventet_bruger=forventet_bruger,
+        ):
+            continue
+
+        if not _dokument_er_pdf(dokument=dokument):
+            continue
+
+        titel = _hent_dokumenttekst(
+            dokument=dokument,
+            feltnavn="title",
+        )
+
+        if _tekster_er_ens(
+            titel,
+            forventet_hoveddokument_titel,
+        ):
+            hoveddokumenter.append(dokument)
+            continue
+
+        if _tekster_er_ens(
+            titel,
+            forventet_bilagstitel,
+        ):
+            bilag.append(dokument)
+
+    if not hoveddokumenter:
+        raise WorkItemError(
+            "Dokumentfanen indeholder ikke et hoveddokument med den "
+            "forventede titel og oprettende bruger. "
+            f"Forventet titel: {forventet_hoveddokument_titel!r}. "
+            f"Forventet bruger: {forventet_bruger!r}. "
+            f"Skade-id: {skade_id}."
+        )
+
+    if not bilag:
+        raise WorkItemError(
+            "Dokumentfanen indeholder ikke et EASY-bilag med den "
+            "forventede titel og oprettende bruger. "
+            f"Forventet titel: {forventet_bilagstitel!r}. "
+            f"Forventet bruger: {forventet_bruger!r}. "
+            f"Skade-id: {skade_id}."
+        )
+
+    dokumentpar: list[
+        tuple[
+            datetime,
+            int,
+            int,
+            dict[str, Any],
+            dict[str, Any],
+        ]
+    ] = []
+    maksimal_tidsforskel = timedelta(
+        seconds=tidsforskel_sekunder,
+    )
+
+    for hoveddokument in hoveddokumenter:
+        hoveddokument_oprettet = _hent_dokumenttidspunkt(
+            dokument=hoveddokument,
+        )
+
+        for aktuelt_bilag in bilag:
+            bilag_oprettet = _hent_dokumenttidspunkt(
+                dokument=aktuelt_bilag,
+            )
+            tidsforskel = abs(
+                hoveddokument_oprettet - bilag_oprettet
+            )
+
+            if tidsforskel > maksimal_tidsforskel:
+                continue
+
+            dokumentpar.append(
+                (
+                    max(
+                        hoveddokument_oprettet,
+                        bilag_oprettet,
+                    ),
+                    _hent_dokument_id(
+                        dokument=hoveddokument,
+                    ),
+                    _hent_dokument_id(
+                        dokument=aktuelt_bilag,
+                    ),
+                    hoveddokument,
+                    aktuelt_bilag,
+                )
+            )
+
+    if not dokumentpar:
+        raise WorkItemError(
+            "Der blev fundet relevante dokumenter, men ikke et "
+            "sammenhørende dokumentpar med næsten samme "
+            "oprettelsestidspunkt. "
+            f"Maksimal tidsforskel: {tidsforskel_sekunder} sekunder. "
+            f"Antal hoveddokumenter: {len(hoveddokumenter)}. "
+            f"Antal bilag: {len(bilag)}. "
+            f"Skade-id: {skade_id}."
+        )
+
+    dokumentpar.sort(
+        key=lambda value: (
+            value[0],
+            value[1],
+            value[2],
+        ),
+        reverse=True,
+    )
+
+    (
+        _,
+        hoveddokument_id,
+        bilag_id,
+        hoveddokument,
+        valgt_bilag,
+    ) = dokumentpar[0]
+
+    hoveddokument_oprettet = _hent_dokumenttidspunkt(
+        dokument=hoveddokument,
+    )
+    bilag_oprettet = _hent_dokumenttidspunkt(
+        dokument=valgt_bilag,
+    )
+
+    return {
+        "hoveddokument_id": hoveddokument_id,
+        "hoveddokument_titel": _hent_dokumenttekst(
+            dokument=hoveddokument,
+            feltnavn="title",
+        ),
+        "hoveddokument_filnavn": _hent_dokumenttekst(
+            dokument=hoveddokument,
+            feltnavn="filename",
+        ),
+        "hoveddokument_oprettet": (
+            hoveddokument_oprettet.isoformat()
+        ),
+        "bilag_id": bilag_id,
+        "bilag_titel": _hent_dokumenttekst(
+            dokument=valgt_bilag,
+            feltnavn="title",
+        ),
+        "bilag_filnavn": _hent_dokumenttekst(
+            dokument=valgt_bilag,
+            feltnavn="filename",
+        ),
+        "bilag_oprettet": bilag_oprettet.isoformat(),
+        "oprettet_af": forventet_bruger,
+    }
+
+
+def _udpak_dokumentliste(
+    *,
+    dokumentrespons: list[dict[str, Any]] | dict[str, Any],
+    skade_id: int,
+) -> list[dict[str, Any]]:
+    """Finder dokumentposter rekursivt i getDirectory-svaret."""
+    dokumenter: list[dict[str, Any]] = []
+    sete_dokument_ider: set[int] = set()
+
+    def gennemgaa(value: Any) -> None:
+        if isinstance(value, dict):
+            if (
+                "title" in value
+                and "id" in value
+                and (
+                    "filename" in value
+                    or "fileType" in value
+                )
+            ):
+                try:
+                    dokument_id = _hent_dokument_id(
+                        dokument=value,
+                    )
+                except WorkItemError:
+                    dokument_id = 0
+
+                if (
+                    dokument_id > 0
+                    and dokument_id not in sete_dokument_ider
+                ):
+                    sete_dokument_ider.add(dokument_id)
+                    dokumenter.append(value)
+
+            for child in value.values():
+                gennemgaa(child)
+
+        elif isinstance(value, list):
+            for child in value:
+                gennemgaa(child)
+
+    gennemgaa(dokumentrespons)
+
+    if not dokumenter:
+        raise WorkItemError(
+            "Dokumentresponsen indeholder ingen læsbare dokumentposter. "
+            f"Skade-id: {skade_id}."
+        )
+
+    return dokumenter
+
+
+def _dokument_er_oprettet_af(
+    *,
+    dokument: dict[str, Any],
+    forventet_bruger: str,
+) -> bool:
+    """Kontrollerer createdBy.name på et dokument."""
+    created_by = dokument.get("createdBy")
+
+    if not isinstance(created_by, dict):
+        return False
+
+    return _tekster_er_ens(
+        created_by.get("name"),
+        forventet_bruger,
+    )
+
+
+def _dokument_er_pdf(
+    *,
+    dokument: dict[str, Any],
+) -> bool:
+    """Kontrollerer dokumentets filtype."""
+    file_type = dokument.get("fileType")
+
+    if (
+        isinstance(file_type, str)
+        and file_type.strip().casefold() == "pdf"
+    ):
+        return True
+
+    filename = dokument.get("filename")
+    return (
+        isinstance(filename, str)
+        and filename.strip().casefold().endswith(".pdf")
+    )
+
+
+def _hent_dokument_id(
+    *,
+    dokument: dict[str, Any],
+) -> int:
+    """Henter dokumentets positive Insubiz-id."""
+    value = dokument.get("id")
+
+    if isinstance(value, bool):
+        raise WorkItemError(
+            "Dokumentets id må ikke være boolsk."
+        )
+
+    try:
+        dokument_id = int(value)
+    except (TypeError, ValueError) as error:
+        raise WorkItemError(
+            "Dokumentet mangler et gyldigt id. "
+            f"Titel: {dokument.get('title')!r}."
+        ) from error
+
+    if dokument_id <= 0:
+        raise WorkItemError(
+            "Dokumentets id skal være større end 0. "
+            f"Titel: {dokument.get('title')!r}. "
+            f"Dokument-id: {dokument_id}."
+        )
+
+    return dokument_id
+
+
+def _hent_dokumenttekst(
+    *,
+    dokument: dict[str, Any],
+    feltnavn: str,
+) -> str:
+    """Henter et obligatorisk tekstfelt fra dokumentmetadata."""
+    return _normaliser_paakraevet_tekst(
+        value=dokument.get(feltnavn),
+        field_name=f"dokument.{feltnavn}",
+    )
+
+
+def _hent_dokumenttidspunkt(
+    *,
+    dokument: dict[str, Any],
+) -> datetime:
+    """Henter created med fileCreated som fallback."""
+    value = (
+        dokument.get("created")
+        or dokument.get("fileCreated")
+    )
+
+    if not isinstance(value, str) or not value.strip():
+        raise WorkItemError(
+            "Dokumentet mangler created og fileCreated. "
+            f"Dokument-id: {dokument.get('id')!r}. "
+            f"Titel: {dokument.get('title')!r}."
+        )
+
+    normaliseret = value.strip()
+
+    if normaliseret.endswith(("Z", "z")):
+        normaliseret = normaliseret[:-1] + "+00:00"
+
+    try:
+        return datetime.fromisoformat(normaliseret)
+    except ValueError as error:
+        raise WorkItemError(
+            "Dokumentets oprettelsestidspunkt har et ugyldigt format. "
+            f"Dokument-id: {dokument.get('id')!r}. "
+            f"Værdi: {value!r}."
+        ) from error
 
 
 # ------------------------------------------------------------

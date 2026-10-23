@@ -567,7 +567,7 @@ dependencies = [
 [[package]]
 name = "q-insubiz"
 version = "0.1.0"
-source = { git = "https://github.com/haderslev-rpa/q-insubiz.git?branch=main#d614d44d6ea9ab5559f8adec878d9889c8ba2c7e" }
+source = { git = "https://github.com/haderslev-rpa/q-insubiz.git?branch=main#2d9a006c301821949d55584d732b7ea7691ccac9" }
 dependencies = [
     { name = "automation-server-client" },
     { name = "openpyxl" },
