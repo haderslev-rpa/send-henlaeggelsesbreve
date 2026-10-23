@@ -485,6 +485,14 @@ async def behandel_page(
         ):
             digital_post_test = _hent_digital_post_test()
 
+            # Valider de API-valgte dokumenter, før Digital Post åbnes.
+            valgte_dokumenter = _valider_valgte_dokumenter_foer_afsendelse(
+                valgte_dokumenter=valgte_dokumenter,
+                skade_id=skade_id,
+                hoveddokument_navn=hoveddokument_navn,
+                bilag_navn=bilag_navn,
+            )
+
             resultat = await send_digital_post(
                 page=page,
                 cpr_nummer=cpr_nummer,
@@ -504,12 +512,12 @@ async def behandel_page(
                 ),
                 hoveddokument_oprettet_af=(
                     valgte_dokumenter[
-                        "hoveddokument_oprettet_af"
+                        "oprettet_af"
                     ]
                 ),
                 bilag_oprettet_af=(
                     valgte_dokumenter[
-                        "bilag_oprettet_af"
+                        "oprettet_af"
                     ]
                 ),
                 hoveddokument_oprettet=(
@@ -995,6 +1003,23 @@ def _vaelg_dokumenter_til_digital_post(
         reverse=True,
     )
 
+    # Ved samme seneste oprettelsestidspunkt for flere forskellige par
+    # kan API-metadata ikke bevise, hvilket par der hører sammen.
+    # Vælg derfor ikke vilkårligt ud fra dokument-id.
+    seneste_tidspunkt = dokumentpar[0][0]
+    lige_nye_par = [
+        par for par in dokumentpar
+        if par[0] == seneste_tidspunkt
+    ]
+    if len(lige_nye_par) > 1:
+        raise WorkItemError(
+            "Flere dokumentpar har samme seneste oprettelsestidspunkt. "
+            "Kan ikke vælge sikkert ud fra created alene. "
+            f"Skade-id: {skade_id}. "
+            f"Mulige dokument-id-par: "
+            f"{[(par[1], par[2]) for par in lige_nye_par]!r}."
+        )
+
     (
         _,
         hoveddokument_id,
@@ -1197,6 +1222,129 @@ def _hent_dokumenttidspunkt(
             f"Dokument-id: {dokument.get('id')!r}. "
             f"Værdi: {value!r}."
         ) from error
+
+
+def _valider_valgte_dokumenter_foer_afsendelse(
+    *,
+    valgte_dokumenter: dict[str, Any] | None,
+    skade_id: int,
+    hoveddokument_navn: str,
+    bilag_navn: str,
+) -> dict[str, Any]:
+    """Kontrollerer de fastlåste dokumentmetadata før Digital Post.
+
+    Metadata er valgt fra getDirectory og kan bruges til at målrette
+    UI-valget. Den endelige markering skal stadig verificeres af
+    q-insubiz' marker_dokument().
+    """
+    if not isinstance(valgte_dokumenter, dict):
+        raise WorkItemError(
+            "Dokumentmetadata til Digital Post mangler. "
+            f"Skade-id: {skade_id}."
+        )
+
+    paakraevet = (
+        "hoveddokument_id",
+        "bilag_id",
+        "hoveddokument_titel",
+        "bilag_titel",
+        "hoveddokument_oprettet",
+        "bilag_oprettet",
+        "oprettet_af",
+    )
+    manglende = [
+        key for key in paakraevet
+        if valgte_dokumenter.get(key) is None
+    ]
+    if manglende:
+        raise WorkItemError(
+            "Dokumentmetadata mangler nødvendige felter. "
+            f"Skade-id: {skade_id}. Felter: {manglende!r}."
+        )
+
+    for key in ("hoveddokument_id", "bilag_id"):
+        valgte_dokumenter[key] = _normaliser_positivt_heltal(
+            value=valgte_dokumenter[key],
+            field_name=f"valgte_dokumenter.{key}",
+        )
+    if valgte_dokumenter["hoveddokument_id"] == valgte_dokumenter["bilag_id"]:
+        raise WorkItemError(
+            "Hoveddokument og bilag må ikke have samme dokument-id. "
+            f"Skade-id: {skade_id}."
+        )
+
+    for key in (
+        "hoveddokument_titel", "bilag_titel", "oprettet_af",
+        "hoveddokument_oprettet", "bilag_oprettet",
+    ):
+        valgte_dokumenter[key] = _normaliser_paakraevet_tekst(
+            value=valgte_dokumenter[key],
+            field_name=f"valgte_dokumenter.{key}",
+        )
+
+    forventet_bruger = _hent_konfigurationstekst(
+        attribute_name="DOKUMENT_OPRETTET_AF",
+        field_name="DOKUMENT_OPRETTET_AF",
+    )
+    if not _tekster_er_ens(valgte_dokumenter["oprettet_af"], forventet_bruger):
+        raise WorkItemError(
+            "Dokumenternes oprettende bruger matcher ikke konfigurationen. "
+            f"Skade-id: {skade_id}."
+        )
+
+    if not _tekster_er_ens(
+        valgte_dokumenter["hoveddokument_titel"], hoveddokument_navn
+    ) or not _tekster_er_ens(
+        valgte_dokumenter["bilag_titel"], bilag_navn
+    ):
+        raise WorkItemError(
+            "De valgte dokumenttitler matcher ikke de dokumenter, "
+            f"der skal vedhæftes. Skade-id: {skade_id}."
+        )
+
+    def parse_tidspunkt(key: str) -> datetime:
+        tekst = valgte_dokumenter[key]
+        if tekst.endswith(("Z", "z")):
+            tekst = tekst[:-1] + "+00:00"
+        try:
+            return datetime.fromisoformat(tekst)
+        except ValueError as error:
+            raise WorkItemError(
+                f"Ugyldigt created-tidspunkt i {key}. Skade-id: {skade_id}."
+            ) from error
+
+    hoved_tid = parse_tidspunkt("hoveddokument_oprettet")
+    bilag_tid = parse_tidspunkt("bilag_oprettet")
+    maks_sekunder = getattr(configuration, "DOKUMENT_TIDSFORSKEL_SEKUNDER", None)
+    if isinstance(maks_sekunder, bool) or not isinstance(maks_sekunder, int) or maks_sekunder < 0:
+        raise WorkItemError(
+            "configuration.DOKUMENT_TIDSFORSKEL_SEKUNDER skal være "
+            "et ikke-negativt heltal."
+        )
+    try:
+        forskel = abs(hoved_tid - bilag_tid)
+    except TypeError as error:
+        raise WorkItemError(
+            "Dokumenternes created-tidspunkter bruger forskellige "
+            "tidszoneformater. Kan ikke sammenligne sikkert."
+        ) from error
+    if forskel > timedelta(seconds=maks_sekunder):
+        raise WorkItemError(
+            "Dokumenternes created-tidspunkter ligger for langt fra hinanden. "
+            f"Skade-id: {skade_id}."
+        )
+
+    logger.info(
+        "Dokumentmetadata verificeret før Digital Post. "
+        "Skade-id: %s. Hoveddokument-id: %s. Bilag-id: %s. "
+        "Oprettet af: %s. Tidsforskel: %s.",
+        skade_id,
+        valgte_dokumenter["hoveddokument_id"],
+        valgte_dokumenter["bilag_id"],
+        forventet_bruger,
+        forskel,
+    )
+    return valgte_dokumenter
 
 
 # ------------------------------------------------------------
