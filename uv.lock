@@ -556,7 +556,7 @@ wheels = [
 [[package]]
 name = "q-haderslev-vbo"
 version = "0.1.2"
-source = { git = "https://github.com/haderslev-rpa/q-haderslev-vbo.git?branch=main#c38499b300ed3d70d225f3cb46a3bf98e0901760" }
+source = { git = "https://github.com/haderslev-rpa/q-haderslev-vbo.git?branch=main#48b8c82d7b9f36e7b8913804e8b30341b3327903" }
 dependencies = [
     { name = "automation-server-client" },
     { name = "playwright" },
