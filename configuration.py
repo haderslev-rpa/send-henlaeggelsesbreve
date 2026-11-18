@@ -1,3 +1,4 @@
+import os
 from __future__ import annotations
 
 from datetime import datetime
@@ -129,3 +130,25 @@ KOMMENTAR_BILAG_LABEL = "Bilag"
 # ------------------------------------------------------------
 
 QUEUE_ID: int = 17
+
+
+# ------------------------------------------------------------
+# MAIL VED FEJLET DIGITAL POST
+# ------------------------------------------------------------
+
+MAIL_AFSENDER = os.getenv("MAIL_AFSENDER", "").strip()
+
+MAIL_MODTAGER_SEND_FEJLEDE = "forsikring@haderslev.dk"
+
+MAIL_EMNE_SEND_FEJLEDE = "Digital Post fejlede - skade nr. {skade_nr}"
+
+MAIL_TEKST_SEND_FEJLEDE = (
+    "Borgeren har muligvis ikke har digital post, "
+    "da der opstod et problem under afsendelsen af "
+    "henlæggelsesbrevet.\n\n"
+    "Skade nr.: {skade_nr}"
+)
+
+DIGITAL_POST_FEJL_POPUP_TITEL = "Send fejlede"
+
+DIGITAL_POST_FEJL_POPUP_TIMEOUT_MS = 3_000

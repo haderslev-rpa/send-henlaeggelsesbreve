@@ -28,6 +28,7 @@ APIRequestContext eller API-klient.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Any
@@ -49,6 +50,7 @@ from q_haderslev_vbo.playwright.playwright_run_recorder import (
     PlaywrightRunRecorder,
 )
 from q_insubiz.api.client import InsubizApiClient
+from q_outlook_api.functionality.mail_api import send_mail
 from q_insubiz.functionality.skader import (
     download_easy_rapport_og_gem_i_mappe,
     gem_dokument_fra_skabelon,
@@ -493,46 +495,79 @@ async def behandel_page(
                 bilag_navn=bilag_navn,
             )
 
-            resultat = await send_digital_post(
-                page=page,
-                cpr_nummer=cpr_nummer,
-                dokumenttitel=dokumenttitel,
-                forsendelsestype=forsendelsestype,
-                hoveddokument_navn=hoveddokument_navn,
-                bilag_navn=bilag_navn,
-                hoveddokument_id=(
-                    valgte_dokumenter[
-                        "hoveddokument_id"
-                    ]
-                ),
-                bilag_id=(
-                    valgte_dokumenter[
-                        "bilag_id"
-                    ]
-                ),
-                hoveddokument_oprettet_af=(
-                    valgte_dokumenter[
-                        "oprettet_af"
-                    ]
-                ),
-                bilag_oprettet_af=(
-                    valgte_dokumenter[
-                        "oprettet_af"
-                    ]
-                ),
-                hoveddokument_oprettet=(
-                    valgte_dokumenter[
-                        "hoveddokument_oprettet"
-                    ]
-                ),
-                bilag_oprettet=(
-                    valgte_dokumenter[
-                        "bilag_oprettet"
-                    ]
-                ),
-                test=digital_post_test,
-                recorder=recorder,
-            )
+            try:
+                resultat = await send_digital_post(
+                    page=page,
+                    cpr_nummer=cpr_nummer,
+                    dokumenttitel=dokumenttitel,
+                    forsendelsestype=forsendelsestype,
+                    hoveddokument_navn=hoveddokument_navn,
+                    bilag_navn=bilag_navn,
+                    hoveddokument_id=(
+                        valgte_dokumenter[
+                            "hoveddokument_id"
+                        ]
+                    ),
+                    bilag_id=(
+                        valgte_dokumenter[
+                            "bilag_id"
+                        ]
+                    ),
+                    hoveddokument_oprettet_af=(
+                        valgte_dokumenter[
+                            "oprettet_af"
+                        ]
+                    ),
+                    bilag_oprettet_af=(
+                        valgte_dokumenter[
+                            "oprettet_af"
+                        ]
+                    ),
+                    hoveddokument_oprettet=(
+                        valgte_dokumenter[
+                            "hoveddokument_oprettet"
+                        ]
+                    ),
+                    bilag_oprettet=(
+                        valgte_dokumenter[
+                            "bilag_oprettet"
+                        ]
+                    ),
+                    test=digital_post_test,
+                    recorder=recorder,
+                )
+            except Exception as send_error:
+                if not await _send_fejlede_popup_er_synlig(page=page):
+                    raise
+                await _send_mail_om_fejlet_digital_post(
+                    item=item,
+                    data=data,
+                    skade_id=skade_id,
+                    skade_nr=skade_nr,
+                )
+                raise WorkItemError(
+                    "Digital Post kunne ikke sendes. "
+                    "Insubiz viste popupen 'Send fejlede'. "
+                    "Forsikring er orienteret via mail. "
+                    f"Skade-id: {skade_id}. "
+                    f"Skade-nr.: {skade_nr}. "
+                    "Work itemet kræver manuel behandling."
+                ) from send_error
+            if await _send_fejlede_popup_er_synlig(page=page):
+                await _send_mail_om_fejlet_digital_post(
+                    item=item,
+                    data=data,
+                    skade_id=skade_id,
+                    skade_nr=skade_nr,
+                )
+                raise WorkItemError(
+                    "Digital Post kunne ikke sendes. "
+                    "Insubiz viste popupen 'Send fejlede'. "
+                    "Forsikring er orienteret via mail. "
+                    f"Skade-id: {skade_id}. "
+                    f"Skade-nr.: {skade_nr}. "
+                    "Work itemet kræver manuel behandling."
+                )
 
             _valider_digital_post_resultat(
                 resultat=resultat,
@@ -1345,6 +1380,122 @@ def _valider_valgte_dokumenter_foer_afsendelse(
         forskel,
     )
     return valgte_dokumenter
+
+
+# ------------------------------------------------------------
+# POPUP OG MAIL VED FEJLET DIGITAL POST
+# ------------------------------------------------------------
+async def _send_fejlede_popup_er_synlig(
+    *,
+    page: Page,
+) -> bool:
+    """Returnerer True, hvis popupen 'Send fejlede' er synlig."""
+    popup_titel = page.locator(
+        "div.v-card-title.theme--dark.bg-primary.text-white.py-1"
+    ).filter(
+        has_text=configuration.DIGITAL_POST_FEJL_POPUP_TITEL
+    ).first
+    try:
+        await popup_titel.wait_for(
+            state="visible",
+            timeout=configuration.DIGITAL_POST_FEJL_POPUP_TIMEOUT_MS,
+        )
+    except PlaywrightTimeoutError:
+        return False
+    faktisk_titel = (await popup_titel.inner_text()).strip()
+    return _tekster_er_ens(
+        faktisk_titel,
+        configuration.DIGITAL_POST_FEJL_POPUP_TITEL,
+    )
+
+
+async def _send_mail_om_fejlet_digital_post(
+    *,
+    item: Any,
+    data: dict[str, Any],
+    skade_id: int,
+    skade_nr: str,
+) -> None:
+    """Sender én orienteringsmail til Forsikring og gemmer en state."""
+    if _har_state(
+        data=data,
+        state=STATE_SEND_FEJLEDE_MAIL_SENDT,
+    ):
+        logger.info(
+            "Mail om fejlet Digital Post er allerede sendt. "
+            "Skade-id: %s. Skade-nr.: %s.",
+            skade_id,
+            skade_nr,
+        )
+        return
+    mail_afsender = _hent_konfigurationstekst(
+        attribute_name="MAIL_AFSENDER",
+        field_name="MAIL_AFSENDER",
+    )
+    mail_modtager = _hent_konfigurationstekst(
+        attribute_name="MAIL_MODTAGER_SEND_FEJLEDE",
+        field_name="MAIL_MODTAGER_SEND_FEJLEDE",
+    )
+    mail_emne_skabelon = _hent_konfigurationstekst(
+        attribute_name="MAIL_EMNE_SEND_FEJLEDE",
+        field_name="MAIL_EMNE_SEND_FEJLEDE",
+    )
+    mail_tekst_skabelon = _hent_konfigurationstekst(
+        attribute_name="MAIL_TEKST_SEND_FEJLEDE",
+        field_name="MAIL_TEKST_SEND_FEJLEDE",
+    )
+    try:
+        mail_emne = mail_emne_skabelon.format(skade_nr=skade_nr)
+        mail_tekst = mail_tekst_skabelon.format(skade_nr=skade_nr)
+    except (KeyError, ValueError) as error:
+        raise WorkItemError(
+            "Mailkonfigurationen indeholder en ugyldig formatvariabel. "
+            "Brug kun {skade_nr}."
+        ) from error
+    logger.warning(
+        "Insubiz viste popupen 'Send fejlede'. "
+        "Sender orienteringsmail til %s. Skade-id: %s. Skade-nr.: %s.",
+        mail_modtager,
+        skade_id,
+        skade_nr,
+    )
+    try:
+        mail_sendt = await asyncio.to_thread(
+            send_mail,
+            mail_afsender,
+            {
+                "subject": mail_emne,
+                "body": mail_tekst,
+                "content_type": "Text",
+                "to": mail_modtager,
+                "save_to_sent_items": True,
+            },
+        )
+    except Exception as error:
+        raise WorkItemError(
+            "Digital Post fejlede, og orienteringsmailen til Forsikring "
+            "kunne heller ikke sendes. "
+            f"Skade-id: {skade_id}. Skade-nr.: {skade_nr}. "
+            f"Mailfejl: {type(error).__name__}: {error}"
+        ) from error
+    if mail_sendt is not True:
+        raise WorkItemError(
+            "send_mail bekræftede ikke mailafsendelsen. "
+            f"Skade-id: {skade_id}. Skade-nr.: {skade_nr}. "
+            f"Resultat: {mail_sendt!r}."
+        )
+    _registrer_state(
+        data=data,
+        item=item,
+        state=STATE_SEND_FEJLEDE_MAIL_SENDT,
+    )
+    logger.warning(
+        "Orienteringsmail om fejlet Digital Post blev sendt. "
+        "Modtager: %s. Skade-id: %s. Skade-nr.: %s.",
+        mail_modtager,
+        skade_id,
+        skade_nr,
+    )
 
 
 # ------------------------------------------------------------
