@@ -76,6 +76,10 @@ STATE_EASY_RAPPORT_OPRETTET = "2.0 Oprettet EASY-rapport"
 
 STATE_DIGITAL_POST_SENDT = "3.0 Sendt digital post"
 
+STATE_SEND_FEJLEDE_MAIL_SENDT = (
+    "3.1 Send fejlede - mail sendt til Forsikring"
+)
+
 STATE_KOMMENTAR_OPRETTET = "4.0 Kommentar om Digital Post oprettet"
 
 AFSLUTTENDE_STATES = (STATE_KOMMENTAR_OPRETTET,)
@@ -1416,7 +1420,12 @@ async def _send_mail_om_fejlet_digital_post(
     skade_id: int,
     skade_nr: str,
 ) -> None:
-    """Sender én orienteringsmail til Forsikring og gemmer en state."""
+    """Send én orienteringsmail med skadeoplysninger og gennemførte trin.
+
+    Mailen sendes kun én gang. Funktionen ændrer ikke skaden i Insubiz.
+    Efter kaldet kaster den kaldende Digital Post-gren en WorkItemError,
+    så kommentar og skadeafslutning ikke gennemføres.
+    """
     if _har_state(
         data=data,
         state=STATE_SEND_FEJLEDE_MAIL_SENDT,
@@ -1428,6 +1437,7 @@ async def _send_mail_om_fejlet_digital_post(
             skade_nr,
         )
         return
+
     mail_afsender = _hent_konfigurationstekst(
         attribute_name="MAIL_AFSENDER",
         field_name="MAIL_AFSENDER",
@@ -1436,22 +1446,17 @@ async def _send_mail_om_fejlet_digital_post(
         attribute_name="MAIL_MODTAGER_SEND_FEJLEDE",
         field_name="MAIL_MODTAGER_SEND_FEJLEDE",
     )
-    mail_emne_skabelon = _hent_konfigurationstekst(
-        attribute_name="MAIL_EMNE_SEND_FEJLEDE",
-        field_name="MAIL_EMNE_SEND_FEJLEDE",
+
+    mail_emne = (
+        "Kan ikke afsende henlæggelsesbrev på skade nr. "
+        f"{skade_nr}"
     )
-    mail_tekst_skabelon = _hent_konfigurationstekst(
-        attribute_name="MAIL_TEKST_SEND_FEJLEDE",
-        field_name="MAIL_TEKST_SEND_FEJLEDE",
+    mail_tekst = _opbyg_mailtekst_ved_fejlet_digital_post(
+        data=data,
+        skade_id=skade_id,
+        skade_nr=skade_nr,
     )
-    try:
-        mail_emne = mail_emne_skabelon.format(skade_nr=skade_nr)
-        mail_tekst = mail_tekst_skabelon.format(skade_nr=skade_nr)
-    except (KeyError, ValueError) as error:
-        raise WorkItemError(
-            "Mailkonfigurationen indeholder en ugyldig formatvariabel. "
-            "Brug kun {skade_nr}."
-        ) from error
+
     logger.warning(
         "Insubiz viste popupen 'Send fejlede'. "
         "Sender orienteringsmail til %s. Skade-id: %s. Skade-nr.: %s.",
@@ -1459,6 +1464,7 @@ async def _send_mail_om_fejlet_digital_post(
         skade_id,
         skade_nr,
     )
+
     try:
         mail_sendt = await asyncio.to_thread(
             send_mail,
@@ -1478,17 +1484,20 @@ async def _send_mail_om_fejlet_digital_post(
             f"Skade-id: {skade_id}. Skade-nr.: {skade_nr}. "
             f"Mailfejl: {type(error).__name__}: {error}"
         ) from error
+
     if mail_sendt is not True:
         raise WorkItemError(
             "send_mail bekræftede ikke mailafsendelsen. "
             f"Skade-id: {skade_id}. Skade-nr.: {skade_nr}. "
             f"Resultat: {mail_sendt!r}."
         )
+
     _registrer_state(
         data=data,
         item=item,
         state=STATE_SEND_FEJLEDE_MAIL_SENDT,
     )
+
     logger.warning(
         "Orienteringsmail om fejlet Digital Post blev sendt. "
         "Modtager: %s. Skade-id: %s. Skade-nr.: %s.",
@@ -1496,6 +1505,130 @@ async def _send_mail_om_fejlet_digital_post(
         skade_id,
         skade_nr,
     )
+
+
+def _opbyg_mailtekst_ved_fejlet_digital_post(
+    *,
+    data: dict[str, Any],
+    skade_id: int,
+    skade_nr: str,
+) -> str:
+    """Returner mailtekst med faktisk gennemførte og ikke gennemførte trin."""
+    brev_oprettet = _har_state(
+        data=data,
+        state=STATE_DOKUMENT_OPRETTET,
+    )
+    easy_rapport_oprettet = _har_state(
+        data=data,
+        state=STATE_EASY_RAPPORT_OPRETTET,
+    )
+    digital_post_sendt = _har_state(
+        data=data,
+        state=STATE_DIGITAL_POST_SENDT,
+    )
+    kommentar_oprettet = _har_state(
+        data=data,
+        state=STATE_KOMMENTAR_OPRETTET,
+    )
+
+    box = _hent_box(data=data)
+    dokumenter_valgt = all(
+        box.get(feltnavn) not in (None, "")
+        for feltnavn in (
+            BOX_DIGITAL_POST_HOVEDDOKUMENT_ID,
+            BOX_DIGITAL_POST_BILAG_ID,
+        )
+    )
+
+    gennemfoerte_trin: list[str] = []
+    ikke_gennemfoerte_trin: list[str] = []
+
+    if brev_oprettet:
+        gennemfoerte_trin.append(
+            "Henlæggelsesbrevet er oprettet fra skabelon."
+        )
+    else:
+        ikke_gennemfoerte_trin.append(
+            "Henlæggelsesbrevet er ikke bekræftet oprettet."
+        )
+
+    if easy_rapport_oprettet:
+        gennemfoerte_trin.append(
+            "EASY-rapporten er oprettet og gemt på skaden."
+        )
+    else:
+        ikke_gennemfoerte_trin.append(
+            "EASY-rapporten er ikke bekræftet oprettet."
+        )
+
+    if dokumenter_valgt:
+        gennemfoerte_trin.append(
+            "Henlæggelsesbrevet og EASY-rapporten er fundet og valgt "
+            "til Digital Post."
+        )
+    else:
+        ikke_gennemfoerte_trin.append(
+            "Dokumenterne til Digital Post er ikke bekræftet valgt."
+        )
+
+    if digital_post_sendt:
+        gennemfoerte_trin.append(
+            "Digital Post er registreret som sendt."
+        )
+    else:
+        ikke_gennemfoerte_trin.append(
+            "Digital Post er ikke sendt."
+        )
+
+    if kommentar_oprettet:
+        gennemfoerte_trin.append(
+            "Kommentaren om Digital Post er oprettet på skaden."
+        )
+    else:
+        ikke_gennemfoerte_trin.append(
+            "Der er ikke oprettet en afsluttende kommentar på skaden."
+        )
+
+    linjer = [
+        "Henlæggelsesbrevet kunne ikke afsendes.",
+        "",
+        f"Skade nr.: {skade_nr}",
+        f"Skade-id: {skade_id}",
+        "",
+        "Følgende er gennemført:",
+    ]
+
+    linjer.extend(
+        f"- {beskrivelse}"
+        for beskrivelse in gennemfoerte_trin
+    )
+
+    if not gennemfoerte_trin:
+        linjer.append("- Ingen procestrin er bekræftet gennemført.")
+
+    linjer.extend(
+        [
+            "",
+            "Følgende er ikke gennemført:",
+        ]
+    )
+    linjer.extend(
+        f"- {beskrivelse}"
+        for beskrivelse in ikke_gennemfoerte_trin
+    )
+
+    if not ikke_gennemfoerte_trin:
+        linjer.append("- Ingen manglende procestrin er registreret.")
+
+    linjer.extend(
+        [
+            "",
+            "Skaden er ikke afsluttet af robotten.",
+            "Sagen skal behandles manuelt.",
+        ]
+    )
+
+    return "\n".join(linjer)
 
 
 # ------------------------------------------------------------

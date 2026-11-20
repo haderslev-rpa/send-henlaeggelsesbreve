@@ -297,6 +297,7 @@ dependencies = [
     { name = "playwright" },
     { name = "q-haderslev-vbo" },
     { name = "q-insubiz" },
+    { name = "q-outlook-api" },
 ]
 
 [package.dev-dependencies]
@@ -310,6 +311,7 @@ requires-dist = [
     { name = "playwright", specifier = ">=1.59.0" },
     { name = "q-haderslev-vbo", git = "https://github.com/haderslev-rpa/q-haderslev-vbo.git" },
     { name = "q-insubiz", git = "https://github.com/haderslev-rpa/q-insubiz.git?branch=main" },
+    { name = "q-outlook-api", git = "https://github.com/haderslev-rpa/q-outlook-api.git?branch=main" },
 ]
 
 [package.metadata.requires-dev]
@@ -573,6 +575,15 @@ dependencies = [
     { name = "openpyxl" },
     { name = "playwright" },
     { name = "q-haderslev-vbo" },
+]
+
+[[package]]
+name = "q-outlook-api"
+version = "0.1.0"
+source = { git = "https://github.com/haderslev-rpa/q-outlook-api.git?branch=main#ee0193429bc210cd96d5993b400e49ce855eb420" }
+dependencies = [
+    { name = "automation-server-client" },
+    { name = "requests" },
 ]
 
 [[package]]
